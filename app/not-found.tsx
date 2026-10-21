@@ -1,0 +1,1 @@
+import Link from "next/link";export default function Missing(){return <main className="landing"><h1>That member isn’t here</h1><p>The name may have changed or the link is mistyped.</p><Link className="button" href="/">Back to member picker</Link></main>}
