@@ -1,3 +1,38 @@
-export const runtime="nodejs";export const dynamic="force-dynamic";
-import {db,fail,ApiError,lockMember,snapshot} from "../../../../../lib/server";
-export async function POST(r:Request,{params}:{params:Promise<{id:string}>}){try{const b=await r.json(),id=(await params).id;const want=await db.want.findUnique({where:{id},include:{offers:true}});if(!want)throw new ApiError(404,"WANT_NOT_FOUND","Want not found");if(b.actorMemberId!==want.memberId)throw new ApiError(403,"OWNER_REQUIRED","Only owner can clear acceptance");const accepted=want.offers.find(o=>o.status==="accepted");if(!accepted||accepted.id!==b.expectedAcceptedOfferId)throw new ApiError(409,"ACCEPTANCE_CHANGED","Accepted offer changed");const list=await db.$transaction(async tx=>{await lockMember(tx,want.memberId);const member=await tx.member.findUniqueOrThrow({where:{id:want.memberId}});if(member.revision!==b.expectedRevision)throw new ApiError(409,"STALE_LIST","List changed");await tx.offer.update({where:{id:accepted.id},data:{status:"open"}});await tx.member.update({where:{id:want.memberId},data:{revision:{increment:1}}});return snapshot(want.memberId,b.actorMemberId,tx)});return Response.json({list,revision:list.member.revision})}catch(e){return fail(e)}}
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+import { db, fail, ApiError, memberMutation } from "../../../../../lib/server";
+export async function POST(
+  r: Request,
+  { params }: { params: Promise<{ id: string }> },
+) {
+  try {
+    const b = await r.json(),
+      id = (await params).id;
+    const want = await db.want.findUnique({
+      where: { id },
+      include: { offers: true },
+    });
+    if (!want) throw new ApiError(404, "WANT_NOT_FOUND", "Want not found");
+    if (b.actorMemberId !== want.memberId)
+      throw new ApiError(
+        403,
+        "OWNER_REQUIRED",
+        "Only owner can clear acceptance",
+      );
+    const response = await memberMutation(want.memberId, b, async (tx) => {
+      const fresh = await tx.offer.findFirst({
+        where: { wantId: id, status: "accepted" },
+      });
+      if (!fresh || fresh.id !== b.expectedAcceptedOfferId)
+        throw new ApiError(409, "ACCEPTANCE_CHANGED", "Accepted offer changed");
+      await tx.offer.update({
+        where: { id: fresh.id },
+        data: { status: "open" },
+      });
+      return {};
+    });
+    return Response.json(response);
+  } catch (e) {
+    return fail(e);
+  }
+}

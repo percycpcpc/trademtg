@@ -1,4 +1,95 @@
-export const runtime="nodejs";export const dynamic="force-dynamic";
-import {db,fail,ApiError,cardById,lockMember,snapshot,parseQty} from "../../../../lib/server";
-export async function PUT(r:Request,{params}:{params:Promise<{id:string}>}){try{const b=await r.json(),id=(await params).id,line=await db.importLine.findUnique({where:{id},include:{batch:true}});if(!line)throw new ApiError(404,"LINE_NOT_FOUND","Import line not found");if(b.actorMemberId!==line.batch.memberId)throw new ApiError(403,"OWNER_REQUIRED","Only owner can repair imports");const qty=parseQty(b.absoluteQty),card=await cardById(b.scryfallId);const list=await db.$transaction(async tx=>{await lockMember(tx,line.batch.memberId);const member=await tx.member.findUniqueOrThrow({where:{id:line.batch.memberId}});if(member.revision!==b.expectedRevision)throw new ApiError(409,"STALE_LIST","List changed");const fresh=await tx.importLine.findUniqueOrThrow({where:{id}});if(fresh.state!=="unresolved")throw new ApiError(409,"IMPORT_LINE_CONSUMED","Line was already consumed");await tx.want.upsert({where:{memberId_scryfallId:{memberId:line.batch.memberId,scryfallId:card.scryfallId}},create:{memberId:line.batch.memberId,...card,qty},update:{...card,qty}});await tx.importLine.update({where:{id},data:{state:"resolved",resolvedScryfallId:card.scryfallId}});await tx.member.update({where:{id:line.batch.memberId},data:{revision:{increment:1}}});return snapshot(line.batch.memberId,b.actorMemberId,tx)});return Response.json({list,line:{id,state:"resolved",resolvedScryfallId:card.scryfallId},revision:list.member.revision})}catch(e){return fail(e)}}
-export async function DELETE(r:Request,{params}:{params:Promise<{id:string}>}){try{const b=await r.json(),id=(await params).id,line=await db.importLine.findUnique({where:{id},include:{batch:true}});if(!line)throw new ApiError(404,"LINE_NOT_FOUND","Import line not found");const list=await db.$transaction(async tx=>{await lockMember(tx,line.batch.memberId);const member=await tx.member.findUniqueOrThrow({where:{id:line.batch.memberId}});if(member.revision!==b.expectedRevision)throw new ApiError(409,"STALE_LIST","List changed");await tx.importLine.update({where:{id},data:{state:"ignored"}});await tx.member.update({where:{id:line.batch.memberId},data:{revision:{increment:1}}});return snapshot(line.batch.memberId,b.actorMemberId,tx)});return Response.json({deletedId:id,list,revision:list.member.revision})}catch(e){return fail(e)}}
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+import {
+  db,
+  fail,
+  ApiError,
+  cardById,
+  memberMutation,
+  parseQty,
+} from "../../../../lib/server";
+export async function PUT(
+  r: Request,
+  { params }: { params: Promise<{ id: string }> },
+) {
+  try {
+    const b = await r.json(),
+      id = (await params).id,
+      line = await db.importLine.findUnique({
+        where: { id },
+        include: { batch: true },
+      });
+    if (!line)
+      throw new ApiError(404, "LINE_NOT_FOUND", "Import line not found");
+    if (b.actorMemberId !== line.batch.memberId)
+      throw new ApiError(
+        403,
+        "OWNER_REQUIRED",
+        "Only owner can repair imports",
+      );
+    const qty = parseQty(b.absoluteQty),
+      card = await cardById(b.scryfallId);
+    const response = await memberMutation(
+      line.batch.memberId,
+      b,
+      async (tx) => {
+        const fresh = await tx.importLine.findUniqueOrThrow({ where: { id } });
+        if (fresh.state !== "unresolved")
+          throw new ApiError(
+            409,
+            "IMPORT_LINE_CONSUMED",
+            "Line was already consumed",
+          );
+        await tx.want.upsert({
+          where: {
+            memberId_scryfallId: {
+              memberId: line.batch.memberId,
+              scryfallId: card.scryfallId,
+            },
+          },
+          create: { memberId: line.batch.memberId, ...card, qty },
+          update: { ...card, qty },
+        });
+        await tx.importLine.update({
+          where: { id },
+          data: { state: "resolved", resolvedScryfallId: card.scryfallId },
+        });
+        return {
+          line: { id, state: "resolved", resolvedScryfallId: card.scryfallId },
+        };
+      },
+    );
+    return Response.json(response);
+  } catch (e) {
+    return fail(e);
+  }
+}
+export async function DELETE(
+  r: Request,
+  { params }: { params: Promise<{ id: string }> },
+) {
+  try {
+    const b = await r.json(),
+      id = (await params).id,
+      line = await db.importLine.findUnique({
+        where: { id },
+        include: { batch: true },
+      });
+    if (!line)
+      throw new ApiError(404, "LINE_NOT_FOUND", "Import line not found");
+    const response = await memberMutation(
+      line.batch.memberId,
+      b,
+      async (tx) => {
+        await tx.importLine.update({
+          where: { id },
+          data: { state: "ignored" },
+        });
+        return { deletedId: id };
+      },
+    );
+    return Response.json(response);
+  } catch (e) {
+    return fail(e);
+  }
+}
