@@ -1,135 +1,359 @@
-"use client";
+﻿"use client";
 import Link from "next/link";
 import {
   FormEvent,
   ReactNode,
   useEffect,
-  useMemo,
+  useId,
   useRef,
   useState,
 } from "react";
+import { createPortal } from "react-dom";
 import type { List, Member, Want } from "../lib/client-types";
 import { getReferencePrice } from "../lib/reference-price";
-const requestId = () => crypto.randomUUID();
-class ApiClientError extends Error {
-  constructor(
-    message: string,
-    public status: number,
-    public body: any,
-  ) {
-    super(message);
-  }
-}
-async function api(url: string, init?: RequestInit) {
-  const r = await fetch(url, {
-    ...init,
-    headers: { "content-type": "application/json", ...(init?.headers ?? {}) },
-  });
-  const x = await r.json();
-  if (!r.ok)
-    throw new ApiClientError(
-      x.error?.message ?? x.message ?? "Request failed",
-      r.status,
-      x,
-    );
-  return x;
-}
+import {
+  amount,
+  ImportReport,
+  reviewCounts,
+  tileStatus,
+  validPrice,
+  validQuantity,
+} from "../lib/ux";
+import {
+  api,
+  ApiClientError,
+  Draft,
+  draftKey,
+  ListStore,
+  Operation,
+  useList,
+} from "./use-list";
+
 export function Picker() {
   const [members, setMembers] = useState<Member[]>([]),
-    [name, setName] = useState(""),
-    [error, setError] = useState("");
-  useEffect(() => {
-    api("/api/members")
-      .then((x) => setMembers(x.members))
-      .catch((e) => setError(e.message));
-  }, []);
-  async function add(e: FormEvent) {
-    e.preventDefault();
+    [name, setName] = useState("");
+  const [loading, setLoading] = useState(true),
+    [loadError, setLoadError] = useState(false),
+    [error, setError] = useState(""),
+    [pending, setPending] = useState(false);
+  async function load() {
+    setLoading(true);
+    setLoadError(false);
     try {
-      const x = await api("/api/members", {
+      setMembers((await api("/api/members")).members);
+    } catch {
+      setLoadError(true);
+    } finally {
+      setLoading(false);
+    }
+  }
+  useEffect(() => {
+    void load();
+  }, []);
+  async function add(event: FormEvent) {
+    event.preventDefault();
+    if (pending) return;
+    setPending(true);
+    setError("");
+    try {
+      const { member } = await api("/api/members", {
         method: "POST",
         body: JSON.stringify({ name }),
       });
-      location.href = `/${encodeURIComponent(x.member.name)}`;
-    } catch (e) {
-      setError((e as Error).message);
+      localStorage.setItem("actor", member.id);
+      location.href = `/${encodeURIComponent(member.name)}`;
+    } catch (error) {
+      setError((error as Error).message);
+      setPending(false);
     }
   }
   return (
     <div className="picker">
-      {members.map((m) => (
-        <Link
-          key={m.id}
-          href={`/${encodeURIComponent(m.name)}`}
-          style={{ borderColor: m.color }}
-        >
-          {m.name}
-        </Link>
-      ))}
+      {loading ? (
+        <p role="status">Loading names…</p>
+      ) : loadError ? (
+        <p role="alert">
+          Couldn’t load names. <button onClick={load}>Try again</button>
+        </p>
+      ) : !members.length ? (
+        <p>No members yet. Add your name to start.</p>
+      ) : (
+        members.map((m) => (
+          <Link
+            key={m.id}
+            href={`/${encodeURIComponent(m.name)}`}
+            onClick={() => localStorage.setItem("actor", m.id)}
+            style={{ borderColor: m.color }}
+          >
+            {m.name}
+          </Link>
+        ))
+      )}
       <form onSubmit={add}>
         <label>
-          Add your name
+          New here? Add your name.
           <input
             value={name}
-            maxLength={40}
             onChange={(e) => setName(e.target.value)}
+            maxLength={40}
             placeholder="Member name"
           />
         </label>
-        <button>Add member</button>
+        <button disabled={pending || !name.trim()}>
+          {pending ? "Adding…" : "Add name"}
+        </button>
       </form>
-      {error && <p className="error">{error}</p>}
+      {error && (
+        <p role="alert" className="error">
+          {error}{" "}
+          <button disabled={pending} onClick={add}>
+            Retry
+          </button>
+        </p>
+      )}
     </div>
   );
 }
-const groups = [
-  "White",
-  "Blue",
-  "Black",
-  "Red",
-  "Green",
-  "Multi",
-  "Colorless",
-] as const;
-function group(w: Want) {
-  if (w.colors.length > 1) return "Multi";
+
+export function Dialog({
+  title,
+  subtitle,
+  close,
+  status,
+  children,
+}: {
+  title: string;
+  subtitle?: string;
+  close: () => void;
+  status?: ReactNode;
+  children: ReactNode;
+}) {
+  const ref = useRef<HTMLDivElement>(null),
+    closeRef = useRef(close),
+    titleId = useId();
+  closeRef.current = close;
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+  useEffect(() => {
+    if (!mounted || !ref.current) return;
+    const opener = document.activeElement as HTMLElement | null,
+      panel = ref.current;
+    const backdrop = panel.parentElement!;
+    const siblings = [...document.body.children].filter(
+      (el) => el !== backdrop && el instanceof HTMLElement,
+    ) as HTMLElement[];
+    const prior = siblings.map((el) => el.inert);
+    siblings.forEach((el) => {
+      el.inert = true;
+    });
+    const overflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    panel.focus();
+    const viewport = () => {
+      backdrop.style.height = `${window.visualViewport?.height ?? window.innerHeight}px`;
+      backdrop.style.top = `${window.visualViewport?.offsetTop ?? 0}px`;
+      if (panel.contains(document.activeElement))
+        (document.activeElement as HTMLElement)?.scrollIntoView({
+          block: "nearest",
+        });
+    };
+    viewport();
+    window.visualViewport?.addEventListener("resize", viewport);
+    window.visualViewport?.addEventListener("scroll", viewport);
+    const key = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closeRef.current();
+      }
+      if (event.key !== "Tab") return;
+      const items = [
+        ...panel.querySelectorAll<HTMLElement>(
+          'button:not(:disabled),a[href],input:not(:disabled),select:not(:disabled),textarea:not(:disabled),summary,[tabindex="0"]',
+        ),
+      ].filter((el) => el.getClientRects().length);
+      const first = items[0],
+        last = items.at(-1);
+      if (!first) {
+        event.preventDefault();
+        panel.focus();
+      } else if (
+        event.shiftKey &&
+        (document.activeElement === first ||
+          document.activeElement === panel ||
+          !panel.contains(document.activeElement))
+      ) {
+        event.preventDefault();
+        last!.focus();
+      } else if (
+        !event.shiftKey &&
+        (document.activeElement === last ||
+          document.activeElement === panel ||
+          !panel.contains(document.activeElement))
+      ) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener("keydown", key);
+    return () => {
+      document.removeEventListener("keydown", key);
+      window.visualViewport?.removeEventListener("resize", viewport);
+      window.visualViewport?.removeEventListener("scroll", viewport);
+      document.body.style.overflow = overflow;
+      siblings.forEach((el, i) => {
+        el.inert = prior[i];
+      });
+      (opener?.isConnected
+        ? opener
+        : document.getElementById("gallery-heading")
+      )?.focus();
+    };
+  }, [mounted]);
+  return mounted
+    ? createPortal(
+        <div
+          className="backdrop"
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) close();
+          }}
+        >
+          <div
+            ref={ref}
+            className="sheet"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby={titleId}
+            tabIndex={-1}
+          >
+            <div className="sheet-header">
+              <div>
+                <h2 id={titleId}>{title}</h2>
+                {subtitle && <p>{subtitle}</p>}
+              </div>
+              <button className="close" onClick={close}>
+                Close
+              </button>
+            </div>
+            <div className="sheet-body">{children}</div>
+            <div className="sheet-status" role="status">
+              {status}
+            </div>
+          </div>
+        </div>,
+        document.body,
+      )
+    : null;
+}
+
+function ActorSelect({
+  actor,
+  members,
+  choose,
+  label = "You are",
+}: {
+  actor: string | null;
+  members: Member[];
+  choose: (id: string) => void;
+  label?: string;
+}) {
   return (
-    ({ W: "White", U: "Blue", B: "Black", R: "Red", G: "Green" } as any)[
-      w.colors[0]
-    ] ?? "Colorless"
+    <label>
+      {label}
+      <select value={actor ?? ""} onChange={(e) => choose(e.target.value)}>
+        <option value="">Choose your name</option>
+        {members.map((m) => (
+          <option key={m.id} value={m.id}>
+            {m.name}
+          </option>
+        ))}
+      </select>
+    </label>
   );
 }
-const rarity: any = { mythic: 0, rare: 1, uncommon: 2, common: 3 };
+const groups = ["White", "Blue", "Black", "Red", "Green", "Multi", "Colorless"];
+const rarity: Record<string, number> = {
+  mythic: 0,
+  rare: 1,
+  uncommon: 2,
+  common: 3,
+};
+function group(want: Want) {
+  return want.colors.length > 1
+    ? "Multi"
+    : ((
+        { W: "White", U: "Blue", B: "Black", R: "Red", G: "Green" } as Record<
+          string,
+          string
+        >
+      )[want.colors[0]] ?? "Colorless");
+}
 export function GalleryApp({ initial }: { initial: List }) {
-  const [list, setList] = useState(initial),
-    [members, setMembers] = useState<Member[]>([]),
+  const store = useList(initial),
+    { list } = store;
+  const [members, setMembers] = useState<Member[]>([]),
     [actor, setActor] = useState<string | null>(null),
-    [open, setOpen] = useState<Want | null>(null),
-    [importing, setImporting] = useState(false),
-    [adding, setAdding] = useState(false);
+    [memberError, setMemberError] = useState(false);
+  const [openWantId, setOpenWantId] = useState<string | null>(null),
+    [panel, setPanel] = useState<"import" | "add" | "repair" | null>(null),
+    [exporting, setExporting] = useState(false),
+    [notice, setNotice] = useState("");
+  const owner = actor === list.member.id,
+    open = list.wants.find((w) => w.id === openWantId),
+    issues = list.unresolvedImports.length;
+  async function loadMembers() {
+    try {
+      const x = await api("/api/members");
+      setMembers(x.members);
+      const stored = localStorage.getItem("actor");
+      const valid = x.members.some((m: Member) => m.id === stored)
+        ? stored
+        : null;
+      if (!valid) localStorage.removeItem("actor");
+      setActor(valid);
+      setMemberError(false);
+      await store.refresh(valid);
+    } catch {
+      setMemberError(true);
+    }
+  }
   useEffect(() => {
-    setActor(localStorage.getItem("actor"));
-    api("/api/members").then((x) => setMembers(x.members));
+    void loadMembers();
   }, []);
-  async function refresh() {
-    setList(
-      await api(`/api/members/${list.member.id}?actorMemberId=${actor ?? ""}`),
-    );
-  }
   useEffect(() => {
-    const f = () => document.visibilityState === "visible" && refresh();
-    addEventListener("focus", f);
-    const t = setInterval(f, 30000);
-    return () => {
-      removeEventListener("focus", f);
-      clearInterval(t);
+    const refresh = () => {
+      if (document.visibilityState === "visible") void store.refresh(actor);
     };
-  }, [actor, list.member.id]);
+    addEventListener("focus", refresh);
+    const timer = setInterval(refresh, 30000);
+    return () => {
+      removeEventListener("focus", refresh);
+      clearInterval(timer);
+    };
+  }, [actor]);
+  useEffect(() => {
+    if (openWantId && !open) {
+      setOpenWantId(null);
+      setNotice("This card was removed from the list.");
+    }
+  }, [openWantId, open]);
   function choose(id: string) {
-    localStorage.setItem("actor", id);
-    setActor(id);
-    refresh();
+    const valid = members.some((m) => m.id === id) ? id : null;
+    if (valid) localStorage.setItem("actor", valid);
+    else localStorage.removeItem("actor");
+    setActor(valid);
+    void store.refresh(valid);
   }
+  const exportLink = (
+    <a
+      className="button"
+      title="Download quantities and card names"
+      href={`/api/members/${list.member.id}/export`}
+    >
+      Download matched cards
+    </a>
+  );
   return (
     <>
       <header>
@@ -138,13 +362,20 @@ export function GalleryApp({ initial }: { initial: List }) {
           <b>MTG</b>
         </Link>
         <div className="identity">
+          <ActorSelect actor={actor} members={members} choose={choose} />
           <label>
-            Acting as
+            Viewing wantlist
             <select
-              value={actor ?? ""}
-              onChange={(e) => choose(e.target.value)}
+              value={list.member.id}
+              onChange={(e) => {
+                const member = members.find((m) => m.id === e.target.value);
+                if (member)
+                  location.href = `/${encodeURIComponent(member.name)}`;
+              }}
             >
-              <option value="">Choose name…</option>
+              {!members.length && (
+                <option value={list.member.id}>{list.member.name}</option>
+              )}
               {members.map((m) => (
                 <option key={m.id} value={m.id}>
                   {m.name}
@@ -152,57 +383,108 @@ export function GalleryApp({ initial }: { initial: List }) {
               ))}
             </select>
           </label>
-          <label>
-            Viewing list<strong>{list.member.name}</strong>
-          </label>
         </div>
-        {actor === list.member.id && (
+        {owner && (
           <nav>
-            <button onClick={() => setAdding(true)}>Add card</button>
-            <button onClick={() => setImporting(true)}>Import list</button>
-            <a
-              className="button"
-              href={`/api/members/${list.member.id}/export`}
-            >
-              Export
-            </a>
+            <button className="primary" onClick={() => setPanel("import")}>
+              Import list
+            </button>
+            <button onClick={() => setPanel("add")}>Add one card</button>
+            {!list.wants.length ? (
+              <button disabled title="Add or match a card before exporting.">
+                Export .txt
+              </button>
+            ) : issues ? (
+              <button
+                title="Download quantities and card names"
+                onClick={() => setExporting(!exporting)}
+              >
+                Export .txt
+              </button>
+            ) : (
+              <a
+                className="button"
+                title="Download quantities and card names"
+                href={`/api/members/${list.member.id}/export`}
+              >
+                Export .txt
+              </a>
+            )}
           </nav>
         )}
       </header>
       <main className="gallery-main">
+        {memberError && (
+          <p role="alert">
+            Couldn’t load names.{" "}
+            <button onClick={loadMembers}>Try again</button>
+          </p>
+        )}
+        {store.readError && (
+          <p role="alert">
+            Couldn’t refresh this list. Showing the last update.{" "}
+            <button onClick={() => store.refresh(actor)}>Retry</button>
+          </p>
+        )}
+        {exporting && owner && (
+          <aside className="toolbar-panel">
+            <p>
+              {issues} unmatched lines won’t be included. Export the{" "}
+              {list.wants.length} cards already on your list?
+            </p>
+            {list.wants.length ? (
+              exportLink
+            ) : (
+              <p>Add or match a card before exporting.</p>
+            )}
+            <button
+              onClick={() => {
+                setExporting(false);
+                setPanel("repair");
+              }}
+            >
+              Fix matches
+            </button>
+            <button onClick={() => setExporting(false)}>Cancel</button>
+          </aside>
+        )}
+        {owner && !list.wants.length && (
+          <p className="muted">Add or match a card before exporting.</p>
+        )}
         <section className="hero">
           <p>WANTLIST · {list.wants.length} PRINTINGS</p>
-          <h1>{list.member.name}’s card hunt</h1>
+          <h1 id="gallery-heading" tabIndex={-1}>
+            {list.member.name}’s card hunt
+          </h1>
           <span>{list.total.remainingCopies} copies still needed</span>
+          <p className="context">
+            {owner
+              ? "Tap a card to change quantities or manage offers."
+              : actor
+                ? `Have one of these? Tap a card to offer it to ${list.member.name}.`
+                : "Choose your name to make offers or manage your own list."}
+          </p>
         </section>
-        {list.unresolvedImports.length > 0 && (
-          <aside className="repair">
-            <b>{list.unresolvedImports.length} import issue(s) need repair</b>
-            {list.unresolvedImports.map((x) => (
-              <RepairLine
-                key={x.id}
-                line={x}
-                list={list}
-                actor={actor}
-                changed={setList}
-              >
-                <button
-                  onClick={async () => {
-                    await api(`/api/import-lines/${x.id}`, {
-                      method: "DELETE",
-                      body: JSON.stringify({
-                        actorMemberId: actor,
-                        requestId: requestId(),
-                        expectedRevision: list.member.revision,
-                      }),
-                    });
-                    refresh();
-                  }}
-                >
-                  Ignore
-                </button>
-              </RepairLine>
-            ))}
+        <p role="status">{notice}</p>
+        {issues > 0 && (
+          <aside className="repair-summary">
+            <b>
+              {owner
+                ? `${issues} imported lines need a match`
+                : `${list.member.name} has ${issues} imported lines to match`}
+            </b>
+            {owner ? (
+              <button onClick={() => setPanel("repair")}>Fix matches</button>
+            ) : (
+              actor && (
+                <details>
+                  <summary>Remove…</summary>
+                  <button onClick={() => setPanel("repair")}>
+                    Manage imported lines
+                  </button>
+                </details>
+              )
+            )}
           </aside>
         )}
         {groups.map((g) => {
@@ -221,7 +503,11 @@ export function GalleryApp({ initial }: { initial: List }) {
               </h2>
               <div className="grid">
                 {cards.map((w) => (
-                  <Tile key={w.id} want={w} onClick={() => setOpen(w)} />
+                  <Tile
+                    key={w.id}
+                    want={w}
+                    onClick={() => setOpenWantId(w.id)}
+                  />
                 ))}
               </div>
             </section>
@@ -229,7 +515,35 @@ export function GalleryApp({ initial }: { initial: List }) {
         })}
         {!list.wants.length && (
           <div className="empty">
-            No cards yet. Pick your identity, then import a list.
+            {owner ? (
+              <>
+                <p>Your wantlist is empty.</p>
+                <button className="primary" onClick={() => setPanel("import")}>
+                  Import list
+                </button>
+                <button onClick={() => setPanel("add")}>Add one card</button>
+              </>
+            ) : actor ? (
+              <>
+                <p>{list.member.name} hasn’t added any cards yet.</p>
+                <Link
+                  className="button"
+                  href={`/${encodeURIComponent(members.find((m) => m.id === actor)?.name ?? "")}`}
+                >
+                  View my wantlist
+                </Link>
+              </>
+            ) : (
+              <>
+                <p>This wantlist is empty.</p>
+                <ActorSelect
+                  actor={actor}
+                  members={members}
+                  choose={choose}
+                  label="Choose your name"
+                />
+              </>
+            )}
           </div>
         )}
       </main>
@@ -242,506 +556,1213 @@ export function GalleryApp({ initial }: { initial: List }) {
       </footer>
       {open && (
         <Sheet
+          key={`${open.id}:${actor}`}
           want={open}
-          list={list}
+          store={store}
           actor={actor}
-          close={() => setOpen(null)}
-          changed={(x) => {
-            setList(x);
-          }}
+          members={members}
+          choose={choose}
+          close={() => setOpenWantId(null)}
         />
       )}
-      {adding && (
-        <AddCard
-          list={list}
-          actor={actor}
-          close={() => setAdding(false)}
-          changed={(x) => {
-            setList(x);
-            setAdding(false);
-          }}
-        />
+      {panel === "add" && owner && (
+        <AddCard store={store} actor={actor!} close={() => setPanel(null)} />
       )}
-      {importing && (
+      {panel === "import" && owner && (
         <ImportSheet
-          list={list}
-          actor={actor}
-          close={() => setImporting(false)}
-          changed={(x) => {
-            setList(x);
-            setImporting(false);
-          }}
+          store={store}
+          actor={actor!}
+          close={() => setPanel(null)}
+          repair={() => setPanel("repair")}
+          announce={setNotice}
         />
+      )}
+      {panel === "repair" && actor && (
+        <Dialog
+          title="Fix matches"
+          close={() => setPanel(null)}
+          status={notice}
+        >
+          {!issues && <p>All imported lines are matched.</p>}
+          {list.unresolvedImports.map((line) => (
+            <RepairLine
+              key={line.id}
+              line={line}
+              store={store}
+              actor={actor}
+              announce={setNotice}
+            />
+          ))}
+        </Dialog>
       )}
     </>
   );
 }
-function CardChooser({
-  initial = "",
-  onPick,
-}: {
-  initial?: string;
-  onPick: (card: any) => void;
-}) {
-  const [query, setQuery] = useState(initial),
-    [names, setNames] = useState<string[]>([]),
-    [error, setError] = useState("");
-  useEffect(() => {
-    if (query.trim().length < 2) {
-      setNames([]);
-      return;
-    }
-    const c = new AbortController(),
-      t = setTimeout(
-        () =>
-          api(`/api/cards/autocomplete?q=${encodeURIComponent(query)}`, {
-            signal: c.signal,
-          })
-            .then((x) => setNames(x.names))
-            .catch((e) => {
-              if (e.name !== "AbortError") setError(e.message);
-            }),
-        200,
-      );
-    return () => {
-      clearTimeout(t);
-      c.abort();
-    };
-  }, [query]);
-  async function choose(name: string) {
-    setQuery(name);
-    setNames([]);
-    try {
-      const x = await api(
-        `/api/cards/resolve?name=${encodeURIComponent(name)}`,
-      );
-      onPick(x.card);
-    } catch (e) {
-      setError((e as Error).message);
-    }
-  }
-  return (
-    <div className="card-chooser">
-      <label>
-        Card name
-        <input
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          autoComplete="off"
-        />
-      </label>
-      {names.length > 0 && (
-        <div className="suggestions">
-          {names.map((n) => (
-            <button key={n} onClick={() => choose(n)}>
-              {n}
-            </button>
-          ))}
-        </div>
-      )}
-      {error && <small className="error">{error}</small>}
-    </div>
-  );
-}
-function AddCard({
-  list,
-  actor,
-  close,
-  changed,
-}: {
-  list: List;
-  actor: string | null;
-  close: () => void;
-  changed: (x: List) => void;
-}) {
-  const [card, setCard] = useState<any>(),
-    [qty, setQty] = useState("1"),
-    [status, setStatus] = useState("");
-  async function add() {
-    if (!card || !/^\d+$/.test(qty) || Number(qty) < 1)
-      return setStatus("Choose a card and valid quantity");
-    const current =
-      list.wants.find((w) => w.scryfallId === card.scryfallId)?.qty ?? 0;
-    try {
-      const x = await api(`/api/members/${list.member.id}/wants`, {
-        method: "PUT",
-        body: JSON.stringify({
-          actorMemberId: actor,
-          requestId: requestId(),
-          expectedRevision: list.member.revision,
-          items: [{ scryfallId: card.scryfallId, qty: current + Number(qty) }],
-        }),
-      });
-      changed(x.list);
-    } catch (e) {
-      setStatus((e as Error).message);
-    }
-  }
-  return (
-    <div className="backdrop">
-      <div className="sheet" role="dialog" aria-modal="true">
-        <button className="close" onClick={close}>
-          Close
-        </button>
-        <h2>Add card</h2>
-        <CardChooser onPick={setCard} />
-        {card && (
-          <p>
-            {card.cardName} ({card.setCode.toUpperCase()} #{card.collectorNo})
-          </p>
-        )}
-        <label>
-          Copies to add
-          <input
-            inputMode="numeric"
-            value={qty}
-            onChange={(e) => setQty(e.target.value)}
-          />
-        </label>
-        <button onClick={add}>Add to list</button>
-        <span aria-live="polite">{status}</span>
-      </div>
-    </div>
-  );
-}
-function RepairLine({
-  line,
-  list,
-  actor,
-  changed,
-  children,
-}: {
-  line: List["unresolvedImports"][number];
-  list: List;
-  actor: string | null;
-  changed: (x: List) => void;
-  children: ReactNode;
-}) {
-  const [card, setCard] = useState<any>(),
-    [target, setTarget] = useState(""),
-    [status, setStatus] = useState("");
-  function picked(c: any) {
-    setCard(c);
-    setTarget(
-      String(
-        (list.wants.find((w) => w.scryfallId === c.scryfallId)?.qty ?? 0) +
-          (line.qty ?? 0),
-      ),
-    );
-  }
-  async function repair() {
-    if (!card || !/^\d+$/.test(target) || Number(target) < 1) return;
-    setStatus("Saving…");
-    try {
-      const x = await api(`/api/import-lines/${line.id}`, {
-        method: "PUT",
-        body: JSON.stringify({
-          actorMemberId: actor,
-          requestId: requestId(),
-          expectedRevision: list.member.revision,
-          scryfallId: card.scryfallId,
-          absoluteQty: Number(target),
-        }),
-      });
-      setStatus("Saved");
-      changed(x.list);
-    } catch (e) {
-      setStatus(`Retry: ${(e as Error).message}`);
-    }
-  }
-  return (
-    <div className="repair-line">
-      <span>
-        Line {line.lineNo}: {line.rawText}
-      </span>
-      <CardChooser initial={line.parsedName ?? ""} onPick={picked} />
-      {card && (
-        <>
-          <label>
-            Absolute target
-            <input
-              inputMode="numeric"
-              value={target}
-              onChange={(e) => setTarget(e.target.value)}
-            />
-          </label>
-          <button onClick={repair}>Resolve line</button>
-        </>
-      )}{" "}
-      {children}
-      <small aria-live="polite">{status}</small>
-    </div>
-  );
-}
+
 function Tile({ want, onClick }: { want: Want; onClick: () => void }) {
-  const active = want.offers.filter((o) => o.status !== "withdrawn"),
-    accepted = active.find((o) => o.status === "accepted"),
-    shown = accepted
-      ? [accepted, ...active.filter((o) => o !== accepted).slice(0, 2)]
-      : active.slice(0, 2);
-  const [bad, setBad] = useState(false);
+  const active = want.offers
+      .filter((o) => o.status !== "withdrawn")
+      .sort(
+        (a, b) =>
+          a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id),
+      ),
+    accepted = active.find((o) => o.id === want.acceptedOfferId);
+  const shown = accepted
+    ? [accepted, ...active.filter((o) => o !== accepted).slice(0, 2)]
+    : active.slice(0, 2);
+  const [bad, setBad] = useState(false),
+    [loaded, setLoaded] = useState(false),
+    status = tileStatus(want);
   return (
     <button
       className={`tile ${accepted ? "accepted" : ""}`}
       onClick={onClick}
-      aria-label={`${want.cardName}, need ${want.qty}, ${active.length} offers`}
+      aria-label={`${want.cardName}, ${want.rarity}, ${status}${active.length ? `, offers from ${active.map((o) => o.offerer.name).join(", ")}` : ""}`}
     >
-      {!bad && want.imageUrl ? (
+      {(!loaded || bad || !want.imageUrl) && (
+        <div className="placeholder">
+          <span>{want.cardName}</span>
+        </div>
+      )}
+      {!bad && want.imageUrl && (
         <img
           src={want.imageUrl}
           alt=""
           loading="lazy"
           decoding="async"
+          onLoad={() => setLoaded(true)}
           onError={() => setBad(true)}
         />
-      ) : (
-        <div className="placeholder">{want.cardName}</div>
       )}
       <i className={`gem ${want.rarity}`}>{want.rarity}</i>
-      <div className="stickers">
-        {shown.map((o, i) => (
-          <span
-            key={o.id}
-            className={i > 0 && accepted ? "dim" : ""}
-            style={{ color: o.offerer.color }}
-          >
-            {o.offerer.name}
-            {o === accepted && <em> ✓ accepted</em>}
-          </span>
-        ))}
-        {active.length > shown.length && (
-          <small>+{active.length - shown.length} offers</small>
-        )}
-      </div>
-      <div className="need">
-        {accepted
-          ? `${accepted.qty}/${want.qty} accepted`
-          : active.length
-            ? `Need ${want.qty} · ${active.length} offers`
-            : `Need ${want.qty}`}
-      </div>
+      {active.length > 0 && (
+        <div className="stickers">
+          {shown.map((o) => (
+            <span
+              key={o.id}
+              className={accepted && o !== accepted ? "dim" : ""}
+              style={{
+                color: o.offerer.color,
+                fontSize:
+                  accepted && o !== accepted
+                    ? "20px"
+                    : `clamp(20px, ${Math.min(16.67, 240 / Math.max(14.4, o.offerer.name.length))}cqw, 44px)`,
+              }}
+            >
+              {o.offerer.name}
+            </span>
+          ))}
+          {active.length > shown.length && (
+            <small>+{active.length - shown.length} offers</small>
+          )}
+        </div>
+      )}
+      {accepted && <small className="accepted-label">✓ Accepted</small>}
+      <div className="need">{status}</div>
     </button>
+  );
+}
+
+// Explicit actions retain their operation object, including the original request ID, on retry.
+function Action({
+  store,
+  actor,
+  operation,
+  label,
+  success,
+  onSuccess,
+  onStatus,
+  primary = false,
+}: {
+  store: ListStore;
+  actor: string;
+  operation: () => Operation;
+  label: string;
+  success?: string;
+  onSuccess?: () => void;
+  onStatus?: (message: string) => void;
+  primary?: boolean;
+}) {
+  const [pending, setPending] = useState(false),
+    [error, setError] = useState(""),
+    [message, setMessage] = useState(""),
+    op = useRef<Operation | null>(null);
+  async function run() {
+    if (pending) return;
+    setPending(true);
+    setError("");
+    onStatus?.("Saving?");
+    op.current ??= operation();
+    try {
+      await store.mutate(op.current, actor);
+      op.current = null;
+      setMessage(success ?? "Saved");
+      onStatus?.(success ?? "Saved");
+      onSuccess?.();
+    } catch (e) {
+      setError((e as Error).message);
+      onStatus?.(`Couldn?t save. ${(e as Error).message}`);
+      if (e instanceof ApiClientError && e.status === 409) op.current = null;
+    } finally {
+      setPending(false);
+    }
+  }
+  return (
+    <div className="action">
+      <button
+        className={primary ? "primary" : ""}
+        disabled={pending}
+        onClick={run}
+      >
+        {pending ? "Saving…" : error ? `Retry: ${label}` : label}
+      </button>
+      {error && (
+        <p role="alert" className="error">
+          {error}
+        </p>
+      )}
+      {message && <p role="status">{message}</p>}
+    </div>
+  );
+}
+function ConfirmAction({
+  question,
+  label,
+  keep,
+  children,
+}: {
+  question: string;
+  label: string;
+  keep: string;
+  children: (done: () => void) => ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
+  return open ? (
+    <div className="inline-confirm">
+      <p>{question}</p>
+      {children(() => setOpen(false))}
+      <button onClick={() => setOpen(false)}>{keep}</button>
+    </div>
+  ) : (
+    <button onClick={() => setOpen(true)}>{label}</button>
+  );
+}
+
+function DraftStatus({
+  draft,
+  store,
+  want,
+}: {
+  draft: Draft;
+  store: ListStore;
+  want: Want;
+}) {
+  const mine = want.offers.find(
+    (o) => o.offerer.id === draft.actor && o.status !== "withdrawn",
+  );
+  const blocked =
+    draft.kind === "quantity" &&
+    validQuantity(draft.qty) &&
+    want.offers.find(
+      (o) => o.status !== "withdrawn" && o.qty > Number(draft.qty),
+    );
+  const invalid = !validQuantity(
+    draft.qty,
+    draft.kind === "offer" ? want.qty : 9999,
+  );
+  const paused = draft.kind === "offer" && !!want.acceptedOfferId;
+  return (
+    <div className="draft-status">
+      {blocked ? (
+        <p role="alert">
+          An offer is for {blocked.qty} copies. Change or remove that offer
+          before reducing this quantity.
+        </p>
+      ) : invalid ? (
+        <p role="alert">
+          Enter a whole number from 1 to{" "}
+          {draft.kind === "offer" ? want.qty : 9999}.
+        </p>
+      ) : (
+        <span role={draft.status.startsWith("Couldn") ? "alert" : "status"}>
+          {paused
+            ? "Offers are paused while this offer is accepted."
+            : draft.status ||
+              (draft.kind === "offer" && !validPrice(draft.price)
+                ? "Not saved — enter a price"
+                : "Saving…")}
+        </span>
+      )}
+      {draft.conflict && (
+        <div className="inline-confirm">
+          <p>
+            Current:{" "}
+            {draft.kind === "quantity"
+              ? `${want.qty} copies`
+              : mine
+                ? `${mine.qty} copies · HK$${mine.unitPriceHkd} each`
+                : "No offer"}
+            . Your draft: {draft.qty} copies
+            {draft.kind === "offer" && ` · HK$${draft.price} each`}.
+          </p>
+          <button disabled={paused} onClick={() => store.resolve(draft, true)}>
+            Apply my changes
+          </button>
+          <button onClick={() => store.resolve(draft, false)}>
+            Use current values
+          </button>
+        </div>
+      )}
+      {!draft.conflict && draft.status.startsWith("Couldn") && !paused && (
+        <button onClick={() => store.save(draftKey(draft.actor, want.id))}>
+          Retry
+        </button>
+      )}
+    </div>
+  );
+}
+function OfferEditor({
+  want,
+  store,
+  actor,
+}: {
+  want: Want;
+  store: ListStore;
+  actor: string;
+}) {
+  const draft = store.getDraft(want, actor),
+    mine = want.offers.find(
+      (o) => o.offerer.id === actor && o.status !== "withdrawn",
+    );
+  const [usd, setUsd] = useState<string | null | undefined>(),
+    [failed, setFailed] = useState(false),
+    [attempt, setAttempt] = useState(0);
+  useEffect(() => {
+    let active = true;
+    setFailed(false);
+    setUsd(undefined);
+    getReferencePrice(want.scryfallId)
+      .then((x) => {
+        if (active) setUsd(x.value);
+      })
+      .catch(() => {
+        if (active) {
+          setFailed(true);
+          setUsd(null);
+        }
+      });
+    return () => {
+      active = false;
+    };
+  }, [want.scryfallId, attempt]);
+  return (
+    <section>
+      <h3>Your offer to {store.list.member.name}</h3>
+      <div className="editor">
+        <label>
+          Copies you can offer
+          <input
+            inputMode="numeric"
+            value={draft.qty}
+            onChange={(e) => store.edit(draft, "qty", e.target.value)}
+          />
+          <small>Up to {want.qty}</small>
+        </label>
+        <label>
+          Your price per copy (HKD)
+          <span className="money-input">
+            <span>HK$</span>
+            <input
+              inputMode="decimal"
+              value={draft.price}
+              placeholder="Enter price"
+              onChange={(e) => store.edit(draft, "price", e.target.value)}
+            />
+          </span>
+          <span className="reference-price">
+            {usd === undefined
+              ? "Reference loading…"
+              : usd === null
+                ? "USD reference unavailable"
+                : `Reference only: ~US$${usd} (TCG mkt)`}
+          </span>
+          {failed && (
+            <button onClick={() => setAttempt((x) => x + 1)}>
+              Retry reference
+            </button>
+          )}
+          <small>Enter your own HKD price. Enter 0 for a free offer.</small>
+        </label>
+      </div>
+      <p>Your offer saves automatically.</p>
+      {validQuantity(draft.qty, want.qty) && validPrice(draft.price) && (
+        <p>
+          {draft.qty} × HK${amount(draft.price)} = HK$
+          {amount(draft.price, Number(draft.qty))}
+        </p>
+      )}
+      <DraftStatus draft={draft} store={store} want={want} />
+      {mine && (
+        <ConfirmAction
+          label="Withdraw my offer"
+          question={`Withdraw your offer for ${want.cardName}?`}
+          keep="Keep offer"
+        >
+          {(done) => (
+            <Action
+              store={store}
+              actor={actor}
+              label="Withdraw offer"
+              operation={() => ({
+                url: `/api/offers/${mine.id}`,
+                method: "PATCH",
+                data: { status: "withdrawn" },
+              })}
+              onSuccess={() => {
+                store.resolve({ ...draft, qty: "1", price: "" }, false);
+                done();
+              }}
+            />
+          )}
+        </ConfirmAction>
+      )}
+    </section>
   );
 }
 function Sheet({
   want,
-  list,
+  store,
   actor,
+  members,
+  choose,
   close,
-  changed,
 }: {
   want: Want;
-  list: List;
+  store: ListStore;
   actor: string | null;
+  members: Member[];
+  choose: (id: string) => void;
   close: () => void;
-  changed: (x: List) => void;
 }) {
-  const ref = useRef<HTMLDivElement>(null),
-    owner = actor === list.member.id,
-    mine = want.offers.find(
-      (o) => o.offerer.id === actor && o.status !== "withdrawn",
-    ),
-    [qty, setQty] = useState(String(mine?.qty ?? 1)),
-    [price, setPrice] = useState(mine?.unitPriceHkd ?? ""),
-    [status, setStatus] = useState(""),
-    [usd, setUsd] = useState<string | null | undefined>();
-  const revision = useRef(list.member.revision), queue = useRef<Promise<void>>(Promise.resolve());
-  useEffect(()=>{revision.current=list.member.revision},[list.member.revision]);
+  const owner = actor === store.list.member.id,
+    active = want.offers.filter((o) => o.status !== "withdrawn"),
+    accepted = active.find((o) => o.id === want.acceptedOfferId);
+  const draft = actor ? store.getDraft(want, actor) : null;
+  const [notice, setNotice] = useState("");
+  return (
+    <Dialog
+      title={want.cardName}
+      subtitle={`${want.setCode.toUpperCase()} · #${want.collectorNo} · ${store.list.member.name}'s wantlist`}
+      close={close}
+      status={
+        notice ||
+        (draft?.dirty
+          ? draft.status || "Your changes are kept while this sheet is closed."
+          : `Need ${want.qty} copies`)
+      }
+    >
+      {accepted && (
+        <section className="accepted-summary">
+          <b>
+            Accepted from {accepted.offerer.name} · {accepted.qty} of {want.qty}{" "}
+            copies · HK${amount(accepted.unitPriceHkd, accepted.qty)} total
+          </b>
+          {accepted.qty < want.qty && (
+            <p>
+              {want.qty - accepted.qty} copies still needed. Only one offer can
+              be accepted at a time.
+            </p>
+          )}
+          <p>
+            {owner
+              ? "Replace this offer or clear acceptance to reopen offers."
+              : "Offers are paused while this offer is accepted."}
+          </p>
+          {owner && (
+            <ConfirmAction
+              label="Clear acceptance"
+              question="Reopen offers for this card?"
+              keep="Keep accepted"
+            >
+              {(done) => (
+                <Action
+                  onStatus={setNotice}
+                  store={store}
+                  actor={actor!}
+                  label="Clear acceptance"
+                  operation={() => ({
+                    url: `/api/wants/${want.id}/clear-acceptance`,
+                    method: "POST",
+                    data: { expectedAcceptedOfferId: accepted.id },
+                  })}
+                  onSuccess={() => {
+                    done();
+                    setNotice("Offers reopened.");
+                  }}
+                />
+              )}
+            </ConfirmAction>
+          )}
+        </section>
+      )}
+      {!actor && (
+        <ActorSelect
+          actor={actor}
+          members={members}
+          choose={choose}
+          label="Choose your name"
+        />
+      )}
+      {owner && draft && (
+        <section>
+          <label>
+            Copies wanted
+            <input
+              inputMode="numeric"
+              value={draft.qty}
+              onChange={(e) => store.edit(draft, "qty", e.target.value)}
+            />
+          </label>
+          <DraftStatus draft={draft} store={store} want={want} />
+        </section>
+      )}
+      {actor && !owner && !accepted && (
+        <OfferEditor want={want} store={store} actor={actor} />
+      )}
+      {accepted && draft?.dirty && !owner && (
+        <DraftStatus draft={draft} store={store} want={want} />
+      )}
+      {actor &&
+        !owner &&
+        !accepted &&
+        active
+          .filter((o) => o.offerer.id === actor)
+          .map((o) => (
+            <div className="offer-list" key={o.id}>
+              <article>
+                <b>You ? {o.qty} copies</b>
+                <span>
+                  HK${amount(o.unitPriceHkd)} each ? HK$
+                  {amount(o.unitPriceHkd, o.qty)} total
+                </span>
+                <em>Open</em>
+              </article>
+            </div>
+          ))}
+      <h3>
+        {owner || !actor
+          ? `Offers (${active.length})`
+          : `Other offers (${active.filter((o) => o.offerer.id !== actor).length})`}
+      </h3>
+      <div className="offer-list">
+        {[...active]
+          .filter((o) => owner || !actor || accepted || o.offerer.id !== actor)
+          .sort(
+            (a, b) =>
+              Number(b.id === accepted?.id) - Number(a.id === accepted?.id) ||
+              Number(b.offerer.id === actor) - Number(a.offerer.id === actor),
+          )
+          .map((o) => (
+            <article
+              key={o.id}
+              className={accepted && o !== accepted ? "not-selected" : ""}
+            >
+              <b
+                style={{
+                  color: `color-mix(in srgb, ${o.offerer.color} 55%, white)`,
+                }}
+              >
+                {o.offerer.id === actor && !owner ? "You" : o.offerer.name} ·{" "}
+                {o.qty} copies
+              </b>
+              <span>
+                HK${amount(o.unitPriceHkd)} each · HK$
+                {amount(o.unitPriceHkd, o.qty)} total
+              </span>
+              <em>
+                {o === accepted
+                  ? "Accepted"
+                  : accepted
+                    ? "Not selected · offers paused"
+                    : "Open"}
+              </em>
+              {owner &&
+                o !== accepted &&
+                (accepted ? (
+                  <ConfirmAction
+                    label={`Replace with ${o.offerer.name}`}
+                    question={`Replace ${accepted.offerer.name}: ${accepted.qty} copies · HK$${amount(accepted.unitPriceHkd, accepted.qty)} total with ${o.offerer.name}: ${o.qty} copies · HK$${amount(o.unitPriceHkd, o.qty)} total?`}
+                    keep="Cancel"
+                  >
+                    {(done) => (
+                      <Action
+                        onStatus={setNotice}
+                        store={store}
+                        actor={actor!}
+                        label="Replace accepted offer"
+                        primary
+                        operation={() => ({
+                          url: `/api/offers/${o.id}/accept`,
+                          method: "POST",
+                          data: { expectedAcceptedOfferId: accepted.id },
+                        })}
+                        onSuccess={() => {
+                          done();
+                          setNotice(
+                            `Accepted ${o.qty} copies from ${o.offerer.name}.`,
+                          );
+                        }}
+                      />
+                    )}
+                  </ConfirmAction>
+                ) : (
+                  <Action
+                    onStatus={setNotice}
+                    store={store}
+                    actor={actor!}
+                    label="Accept"
+                    primary
+                    operation={() => ({
+                      url: `/api/offers/${o.id}/accept`,
+                      method: "POST",
+                      data: { expectedAcceptedOfferId: null },
+                    })}
+                    onSuccess={() =>
+                      setNotice(
+                        `Accepted ${o.qty} copies from ${o.offerer.name}.`,
+                      )
+                    }
+                  />
+                ))}
+            </article>
+          ))}
+      </div>
+      {!active.length && <p>No offers yet.</p>}
+      {actor && (
+        <details className="management">
+          <summary>Remove…</summary>
+          <ConfirmAction
+            label="Remove card"
+            question={`Remove ${want.cardName} and its ${want.offers.length} offers from ${store.list.member.name}'s list?`}
+            keep="Keep card"
+          >
+            {() => (
+              <Action
+                onStatus={setNotice}
+                store={store}
+                actor={actor}
+                label="Remove card"
+                operation={() => ({
+                  url: `/api/wants/${want.id}`,
+                  method: "DELETE",
+                  data: {},
+                })}
+              />
+            )}
+          </ConfirmAction>
+          {active.map((o) => (
+            <ConfirmAction
+              key={o.id}
+              label={`Remove ${o.offerer.name}'s offer`}
+              question={`Remove ${o.offerer.name}'s offer?${o === accepted ? " Removing this accepted offer will reopen offers for this card." : ""}`}
+              keep="Keep offer"
+            >
+              {(done) => (
+                <Action
+                  onStatus={setNotice}
+                  store={store}
+                  actor={actor}
+                  label="Remove offer"
+                  operation={() => ({
+                    url: `/api/offers/${o.id}`,
+                    method: "DELETE",
+                    data: {},
+                  })}
+                  onSuccess={done}
+                />
+              )}
+            </ConfirmAction>
+          ))}
+        </details>
+      )}
+    </Dialog>
+  );
+}
+
+type Card = {
+  scryfallId: string;
+  cardName: string;
+  setCode: string;
+  collectorNo: string;
+};
+function CardChooser({
+  initial = "",
+  onPick,
+  label = "Card name",
+}: {
+  initial?: string;
+  onPick: (card: Card | undefined) => void;
+  label?: string;
+}) {
+  const [query, setQuery] = useState(initial),
+    [names, setNames] = useState<string[]>([]),
+    [state, setState] = useState(""),
+    [retry, setRetry] = useState(0),
+    [selected, setSelected] = useState(false);
+  const generation = useRef(0);
   useEffect(() => {
-    const c = new AbortController();
-    getReferencePrice(want.scryfallId, c.signal)
-      .then((x) => setUsd(x.value))
-      .catch(() => setUsd(null));
-    ref.current?.focus();
-    return () => c.abort();
-  }, [want.scryfallId]);
-  const valid = /^\d+$/.test(qty)&&Number(qty)>=1&&Number(qty)<=want.qty&&/^\d+(?:\.\d{1,2})?$/.test(price);
-  async function persist(method:"POST"|"PUT") {
-    if (!actor) return setStatus("Choose your identity first");
-    if (!valid)
-      return setStatus("Enter a valid quantity and HKD price");
-    setStatus("Saving…");
-    try {
-      const url = method==="PUT" ? `/api/offers/${mine!.id}` : `/api/wants/${want.id}/offers`,
-        x = await api(url, {
-          method,
-          body: JSON.stringify({
-            actorMemberId: actor,
-            offererId: actor,
-            requestId: requestId(),
-            expectedRevision: revision.current,
-            qty: Number(qty),
-            unitPriceHkd: price,
-          }),
+    if (selected) return;
+    setNames([]);
+    setState("");
+    if (query.trim().length < 2) return;
+    const controller = new AbortController();
+    setState("Searching…");
+    const timer = setTimeout(() => {
+      api(`/api/cards/autocomplete?q=${encodeURIComponent(query)}`, {
+        signal: controller.signal,
+      })
+        .then((x) => {
+          setNames(x.names);
+          setState(x.names.length ? "" : "No matches. Check the spelling.");
+        })
+        .catch((e) => {
+          if (e.name !== "AbortError") setState("Couldn’t search cards.");
         });
-      setStatus("Saved");
-      revision.current=x.revision;
-      changed(x.list);
-      if(method==="POST")close();
-    } catch (e) {
-      setStatus(`Retry: ${(e as Error).message}`);
+    }, 200);
+    return () => {
+      controller.abort();
+      clearTimeout(timer);
+    };
+  }, [query, retry, selected]);
+  async function choose(name: string) {
+    const token = ++generation.current;
+    setSelected(true);
+    setQuery(name);
+    setNames([]);
+    setState("Searching…");
+    try {
+      const x = await api(
+        `/api/cards/resolve?name=${encodeURIComponent(name)}`,
+      );
+      if (token === generation.current) {
+        onPick(x.card);
+        setState("");
+      }
+    } catch {
+      if (token === generation.current) setState("Couldn’t search cards.");
     }
   }
-  function enqueue(){queue.current=queue.current.then(()=>persist("PUT"));return queue.current}
-  useEffect(()=>{if(!mine||!valid||qty===String(mine.qty)&&price===mine.unitPriceHkd)return;setStatus("Saving…");const t=setTimeout(()=>{void enqueue()},500);return()=>clearTimeout(t)},[qty,price,mine?.id]);
   return (
-    <div
-      className="backdrop"
-      onMouseDown={(e) => e.target === e.currentTarget && close()}
-    >
-      <div
-        className="sheet"
-        role="dialog"
-        aria-modal="true"
-        aria-label={want.cardName}
-        tabIndex={-1}
-        ref={ref}
-        onKeyDown={(e) => e.key === "Escape" && close()}
-      >
-        <button className="close" onClick={close}>
-          Close
-        </button>
-        <p className="eyebrow">
-          {want.setCode.toUpperCase()} · #{want.collectorNo}
-        </p>
-        <h2>{want.cardName}</h2>
-        <p>Need {want.qty} copies</p>
-        <div className="offer-list">
-          {want.offers
-            .filter((o) => o.status !== "withdrawn")
-            .map((o) => (
-              <article key={o.id}>
-                <b style={{ color: o.offerer.color }}>{o.offerer.name}</b>
-                <span>
-                  {o.qty} × HK${o.unitPriceHkd}
-                </span>
-                {owner && o.status === "open" && (
-                  <button
-                    onClick={async () => {
-                      const x = await api(`/api/offers/${o.id}/accept`, {
-                        method: "POST",
-                        body: JSON.stringify({
-                          actorMemberId: actor,
-                          requestId: requestId(),
-                          expectedRevision: list.member.revision,
-                          expectedAcceptedOfferId: want.acceptedOfferId,
-                        }),
-                      });
-                      changed(x.list);
-                    }}
-                  >
-                    {want.acceptedOfferId ? "Replace accepted" : "Accept"}
-                  </button>
-                )}
-                <em>{o.status}</em>
-              </article>
-            ))}
+    <div className="card-chooser">
+      <label>
+        {label}
+        <input
+          value={query}
+          onChange={(e) => {
+            generation.current++;
+            setQuery(e.target.value);
+            setSelected(false);
+            setNames([]);
+            setState("");
+            onPick(undefined);
+          }}
+          autoComplete="off"
+        />
+      </label>
+      {names.length > 0 && (
+        <div className="suggestions">
+          {names.map((name) => (
+            <button key={name} onClick={() => choose(name)}>
+              {name}
+            </button>
+          ))}
         </div>
-        {!owner && (
-          <div className="editor">
-            <label>
-              Quantity
-              <input
-                inputMode="numeric"
-                value={qty}
-                onChange={(e) => setQty(e.target.value)}
-              />
-            </label>
-            <label>
-              HKD per copy
-              <input
-                inputMode="decimal"
-                value={price}
-                onChange={(e) => setPrice(e.target.value)}
-                placeholder="0.00"
-              />
-            </label>
-            <small>
-              {usd === undefined
-                ? "Reference loading…"
-                : usd === null
-                  ? "USD reference unavailable"
-                  : `~US$${usd} (TCG mkt)`}
-            </small>
-            {!mine&&<button onClick={()=>persist("POST")}>Make offer</button>}
-            {mine&&status.startsWith("Retry:")&&<button onClick={enqueue}>Retry</button>}
-            <span aria-live="polite">{status}</span>
-          </div>
-        )}
-      </div>
+      )}
+      {state && (
+        <p role={state.startsWith("Couldn") ? "alert" : "status"}>{state}</p>
+      )}
+      {state.startsWith("Couldn") && (
+        <button
+          onClick={() => (selected ? choose(query) : setRetry((n) => n + 1))}
+        >
+          Retry
+        </button>
+      )}
     </div>
   );
 }
-function ImportSheet({
-  list,
+function CardIdentity({
+  card,
+}: {
+  card: Card | ImportReport["proposedItems"][number]["card"];
+}) {
+  return (
+    <p>
+      <b>{card.cardName}</b> · {card.setCode.toUpperCase()} · #
+      {card.collectorNo}
+    </p>
+  );
+}
+function AddCard({
+  store,
   actor,
   close,
-  changed,
 }: {
-  list: List;
-  actor: string | null;
+  store: ListStore;
+  actor: string;
   close: () => void;
-  changed: (x: List) => void;
 }) {
-  const [text, setText] = useState(""),
-    [report, setReport] = useState<any>(),
+  const [card, setCard] = useState<Card>(),
+    [qty, setQty] = useState("1"),
+    [status, setStatus] = useState("");
+  return (
+    <Dialog title="Add one card" close={close} status={status}>
+      <CardChooser onPick={setCard} />
+      {card && <CardIdentity card={card} />}
+      <label>
+        Copies to add
+        <input
+          inputMode="numeric"
+          value={qty}
+          onChange={(e) => setQty(e.target.value)}
+        />
+      </label>
+      {card && validQuantity(qty) && (
+        <Action
+          onStatus={setStatus}
+          key={`${card.scryfallId}:${qty}`}
+          store={store}
+          actor={actor}
+          label="Add to list"
+          primary
+          operation={() => ({
+            url: `/api/members/${store.list.member.id}/wants`,
+            method: "PUT",
+            data: {
+              items: [
+                {
+                  scryfallId: card.scryfallId,
+                  qty:
+                    (store.list.wants.find(
+                      (w) => w.scryfallId === card.scryfallId,
+                    )?.qty ?? 0) + Number(qty),
+                },
+              ],
+            },
+          })}
+          onSuccess={close}
+        />
+      )}
+    </Dialog>
+  );
+}
+function RepairLine({
+  line,
+  store,
+  actor,
+  announce,
+}: {
+  line: List["unresolvedImports"][number];
+  store: ListStore;
+  actor: string;
+  announce: (message: string) => void;
+}) {
+  const [card, setCard] = useState<Card>(),
+    [target, setTarget] = useState(""),
     [error, setError] = useState(""),
-    [duplicate,setDuplicate]=useState(false),
-    stageId=useRef(requestId());
-  async function stage(importAgain=false) {
+    [pending, setPending] = useState(false),
+    [stale, setStale] = useState(false),
+    operation = useRef<Operation | null>(null);
+  const owner = actor === store.list.member.id,
+    current =
+      store.list.wants.find((w) => w.scryfallId === card?.scryfallId)?.qty ?? 0;
+  function picked(value: Card | undefined) {
+    setCard(value);
+    operation.current = null;
+    setStale(false);
+    setTarget(
+      value && line.qty !== null
+        ? String(
+            (store.list.wants.find((w) => w.scryfallId === value.scryfallId)
+              ?.qty ?? 0) + line.qty,
+          )
+        : "",
+    );
+  }
+  async function repair() {
+    if (!card || pending || !validQuantity(target)) return;
+    setPending(true);
+    announce("Saving?");
+    setError("");
+    operation.current ??= {
+      url: `/api/import-lines/${line.id}`,
+      method: "PUT",
+      data: { scryfallId: card.scryfallId, absoluteQty: Number(target) },
+    };
     try {
-      const x = await api(`/api/members/${list.member.id}/imports`, {
-        method: "POST",
-        body: JSON.stringify({
-          actorMemberId: actor,
-          requestId: stageId.current,
-          text,
-          importAgain,
-        }),
-      });
-      setReport(x);
-      setDuplicate(false);setError("");
+      const x = await store.mutate(operation.current, actor);
+      announce(
+        `Matched ${card.cardName}. ${x.list.unresolvedImports.length} lines left.`,
+      );
     } catch (e) {
-      if(e instanceof ApiClientError&&e.body.duplicateWarning){setDuplicate(true);setError(e.message)}else setError((e as Error).message);
+      setError((e as Error).message);
+      announce("Couldn?t save. Your changes are kept.");
+      if (e instanceof ApiClientError && e.status === 409) {
+        operation.current = null;
+        setStale(true);
+      }
+    } finally {
+      setPending(false);
     }
   }
-  function target(scryfallId:string,value:string){setReport((r:any)=>({...r,proposedItems:r.proposedItems.map((x:any)=>x.scryfallId===scryfallId?{...x,targetQty:value}:x)}))}
-  async function commit(){const items=report.proposedItems.map((x:any)=>({scryfallId:x.scryfallId,qty:Number(x.targetQty)}));if(items.some((x:any)=>!Number.isInteger(x.qty)||x.qty<1))return setError("Enter valid absolute targets");const resolveLineIds=report.lines.filter((l:any)=>l.state==="unresolved"&&l.scryfallId&&items.some((x:any)=>x.scryfallId===l.scryfallId)).map((l:any)=>l.id);try{const x=await api(`/api/members/${list.member.id}/wants`,{method:"PUT",body:JSON.stringify({actorMemberId:actor,requestId:requestId(),expectedRevision:report.baseRevision,importBatchId:report.batchId,resolveLineIds,items})});changed(x.list)}catch(e){setError((e as Error).message)}}
+  const reason = /unavailable|outage|lookup failed/i.test(line.reason ?? "")
+    ? "Couldn’t check this card. Try again."
+    : /match/i.test(line.reason ?? "")
+      ? "No matching card found. Search for the correct name."
+      : (line.reason ?? "Choose the correct card to add this line.");
   return (
-    <div className="backdrop">
-      <div className="sheet import" role="dialog" aria-modal="true">
-        <button className="close" onClick={close}>
-          Close
-        </button>
-        <p className="eyebrow">PASTE A LIST</p>
-        <h2>Import cards</h2>
-        <textarea
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          placeholder="4x Lightning Bolt (M11) 149"
-        />
-        <button onClick={()=>stage(false)}>Review import</button>
-        {error && <p className="error">{error}</p>}
-        {duplicate&&<button onClick={()=>stage(true)}>Import again</button>}
-        {report && (
-          <div className="report">
-            <b>Staged {report.lines.length} lines</b>
-            {report.lines.map((x: any) => (
-              <p key={x.id}>
-                Line {x.lineNo}: {x.parsedName ?? x.rawText} —{" "}
-                {x.reason ?? "Ready for card resolution"}
+    <section className="repair-line">
+      <p>
+        Line {line.lineNo}: {line.rawText}
+      </p>
+      <p>{reason}</p>
+      {owner && (
+        <>
+          <CardChooser
+            initial={line.parsedName ?? ""}
+            onPick={picked}
+            label="Find the correct card"
+          />
+          {card && (
+            <>
+              <CardIdentity card={card} />
+              <label>
+                Total copies after adding this line
+                <input
+                  inputMode="numeric"
+                  value={target}
+                  disabled={pending}
+                  onChange={(e) => {
+                    setTarget(e.target.value);
+                    operation.current = null;
+                  }}
+                />
+              </label>
+              <p>
+                Already on your list: {current} · From this line:{" "}
+                {line.qty ?? "Enter a quantity"} · New total:{" "}
+                {target || "Enter a total"}
               </p>
-            ))}
-            <p>
-              Exact cards can now be repaired from the persistent queue. No
-              unknown line was added as a want.
+              {line.qty === null && (
+                <p>
+                  This line has no quantity. Enter the total copies explicitly.
+                </p>
+              )}
+              {stale && (
+                <p role="alert">
+                  The list changed. Current total: {current}; drafted total:{" "}
+                  {target}. Review the total before using this card.
+                </p>
+              )}
+              <button
+                className="primary"
+                disabled={pending || !validQuantity(target)}
+                onClick={repair}
+              >
+                {pending
+                  ? "Saving…"
+                  : error
+                    ? "Retry: Use this card"
+                    : "Use this card"}
+              </button>
+            </>
+          )}
+        </>
+      )}
+      {error && (
+        <p role="alert" className="error">
+          {error}
+        </p>
+      )}
+      <details className="management">
+        <summary>Remove…</summary>
+        <ConfirmAction
+          label="Skip this line"
+          question={`Skip “${line.rawText}”? No cards will be added from this line.`}
+          keep="Keep line"
+        >
+          {(done) => (
+            <Action
+              onStatus={announce}
+              store={store}
+              actor={actor}
+              label="Skip line"
+              operation={() => ({
+                url: `/api/import-lines/${line.id}`,
+                method: "DELETE",
+                data: {},
+              })}
+              onSuccess={() => {
+                done();
+                announce("Line skipped.");
+              }}
+            />
+          )}
+        </ConfirmAction>
+      </details>
+    </section>
+  );
+}
+function ImportSheet({
+  store,
+  actor,
+  close,
+  repair,
+  announce,
+}: {
+  store: ListStore;
+  actor: string;
+  close: () => void;
+  repair: () => void;
+  announce: (message: string) => void;
+}) {
+  const [text, setText] = useState(""),
+    [report, setReport] = useState<ImportReport>(),
+    [error, setError] = useState(""),
+    [pending, setPending] = useState(false),
+    [committing, setCommitting] = useState(false),
+    [duplicate, setDuplicate] = useState(false),
+    [result, setResult] = useState<{
+      copies: number;
+      cards: number;
+      issues: number;
+    }>();
+  const stageId = useRef(crypto.randomUUID()),
+    commitOp = useRef<Operation | null>(null),
+    staged = useRef(false),
+    [stale, setStale] = useState(false);
+  const counts = report ? reviewCounts(report) : null;
+  async function stage(importAgain = false) {
+    setCommitting(false);
+    if (pending || !text.trim()) return;
+    setPending(true);
+    setError("");
+    try {
+      const x = await store.mutate(
+        {
+          url: `/api/members/${store.list.member.id}/imports`,
+          method: "POST",
+          data: { text, importAgain, requestId: stageId.current },
+          body: JSON.stringify({
+            actorMemberId: actor,
+            requestId: stageId.current,
+            text,
+            importAgain,
+          }),
+        },
+        actor,
+      );
+      setReport(x);
+      setDuplicate(false);
+      staged.current = true;
+      commitOp.current = null;
+      setStale(false);
+      await store.refresh(actor);
+    } catch (e) {
+      if (e instanceof ApiClientError && e.body.duplicateWarning)
+        setDuplicate(true);
+      else setError((e as Error).message);
+    } finally {
+      setPending(false);
+    }
+  }
+  async function commit() {
+    setCommitting(true);
+    if (!report || !counts || pending) return;
+    setPending(true);
+    setError("");
+    commitOp.current ??= {
+      url: `/api/members/${store.list.member.id}/wants`,
+      method: "PUT",
+      data: {},
+      body: JSON.stringify({
+        actorMemberId: actor,
+        requestId: crypto.randomUUID(),
+        expectedRevision: report.baseRevision,
+        importBatchId: report.batchId,
+        resolveLineIds: report.lines
+          .filter(
+            (l) =>
+              l.state === "unresolved" &&
+              l.scryfallId &&
+              report.proposedItems.some((x) => x.scryfallId === l.scryfallId),
+          )
+          .map((l) => l.id),
+        items: report.proposedItems.map((x) => ({
+          scryfallId: x.scryfallId,
+          qty: x.targetQty,
+        })),
+      }),
+    };
+    try {
+      const x = await store.mutate(commitOp.current, actor);
+      setResult({
+        copies: counts.copies,
+        cards: counts.cards,
+        issues: x.list.unresolvedImports.length,
+      });
+    } catch (e) {
+      setError((e as Error).message);
+      if (e instanceof ApiClientError && e.status === 409) {
+        commitOp.current = null;
+        setStale(true);
+      }
+    } finally {
+      setPending(false);
+    }
+  }
+  function dismiss() {
+    if (staged.current) {
+      void store.refresh(actor);
+      if (!result)
+        announce("Review saved. Cards are added only when you choose Add.");
+    }
+    close();
+  }
+  return (
+    <Dialog
+      title={`Import to ${store.list.member.name}'s wantlist`}
+      close={dismiss}
+      status={
+        pending
+          ? "Checking card names…"
+          : result
+            ? `Added ${result.copies} copies across ${result.cards} cards. ${result.issues} lines still need a match.`
+            : staged.current
+              ? "Review saved. Cards are added only when you choose Add."
+              : ""
+      }
+    >
+      {result ? (
+        <>
+          <p>
+            Added {result.copies} copies across {result.cards} cards.{" "}
+            {result.issues} lines still need a match.
+          </p>
+          {result.issues > 0 && (
+            <button onClick={repair}>Fix {result.issues} lines</button>
+          )}
+          <button onClick={dismiss}>Back to wantlist</button>
+        </>
+      ) : (
+        <>
+          <label>
+            Paste cards from Moxfield, Archidekt, or a text list
+            <textarea
+              disabled={pending}
+              value={text}
+              onChange={(e) => {
+                setText(e.target.value);
+                setReport(undefined);
+                setDuplicate(false);
+                setError("");
+                stageId.current = crypto.randomUUID();
+                commitOp.current = null;
+                setStale(false);
+              }}
+            />
+          </label>
+          <p>
+            One card per line, starting with a quantity. Existing cards get the
+            pasted quantities added.
+          </p>
+          <pre>4 Lightning Bolt{"\n"}4x Lightning Bolt (M11) 149</pre>
+          <button
+            disabled={!text.trim() || pending}
+            onClick={() => stage(false)}
+          >
+            {pending ? "Checking card names…" : "Review cards"}
+          </button>
+          {duplicate && (
+            <div className="inline-confirm">
+              <p>
+                You imported this text before. Importing again adds these
+                quantities again.
+              </p>
+              <button disabled={pending} onClick={() => stage(true)}>
+                Import again
+              </button>
+              <button onClick={() => setDuplicate(false)}>Back to paste</button>
+            </div>
+          )}
+          {error && (
+            <p role="alert" className="error">
+              {error}{" "}
+              {!report && (
+                <button disabled={pending} onClick={() => stage(duplicate)}>
+                  Retry
+                </button>
+              )}
             </p>
-            {report.proposedItems.map((x:any)=><label key={x.scryfallId}>Matched {x.importQty} (current {x.currentQty}); absolute target<input inputMode="numeric" value={x.targetQty} onChange={e=>target(x.scryfallId,e.target.value)}/></label>)}
-            {report.proposedItems.length>0&&<button onClick={commit}>Commit matched cards</button>}
-            <p>Unmatched and malformed lines remain in the repair queue.</p>
-          </div>
-        )}
-      </div>
-    </div>
+          )}
+          {report && counts && (
+            <div className="report">
+              <h3>
+                {counts.cards} cards ready · {counts.issues} lines need a match
+                · {counts.ignored} lines skipped
+              </h3>
+              {report.proposedItems.map((x) => (
+                <article key={x.scryfallId}>
+                  <CardIdentity card={x.card} />
+                  <p>
+                    Have {x.currentQty} + adding {x.importQty} = {x.targetQty}{" "}
+                    copies
+                  </p>
+                </article>
+              ))}
+              {report.lines
+                .filter((x) => x.state === "unresolved" && !x.scryfallId)
+                .map((x) => (
+                  <p key={x.id}>
+                    Line {x.lineNo}: {x.rawText} — {x.reason}
+                  </p>
+                ))}
+              {stale ? (
+                <>
+                  <p>
+                    The list changed. Review the updated quantities before
+                    adding.
+                  </p>
+                  <button disabled={pending} onClick={() => stage(false)}>
+                    Review cards
+                  </button>
+                </>
+              ) : counts.cards > 0 ? (
+                <>
+                  <p>
+                    Matched cards will be added. Unmatched lines stay here for
+                    you to fix later.
+                  </p>
+                  <button
+                    className="primary"
+                    disabled={pending}
+                    onClick={commit}
+                  >
+                    {pending
+                      ? "Adding…"
+                      : `Add ${counts.cards} cards to my list`}
+                  </button>
+                </>
+              ) : (
+                <>
+                  <p>No cards ready to add</p>
+                  <button onClick={repair}>Review unmatched lines</button>
+                </>
+              )}
+            </div>
+          )}
+        </>
+      )}
+    </Dialog>
   );
 }

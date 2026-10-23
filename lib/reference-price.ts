@@ -17,6 +17,6 @@ export function getReferencePrice(id: string, signal?: AbortSignal): Promise<Ent
     const entry: Entry = { value: typeof usd === "string" && /^\d+(\.\d+)?$/.test(usd) ? Number(usd).toFixed(2) : null, at: Date.now() }; memory.set(id, entry);
     try { sessionStorage.setItem(`price:${id}`, JSON.stringify(entry)); new BroadcastChannel("trademtg-prices").postMessage({ id, entry }); } catch {}
     return entry;
-  }); chain = job; pending.set(id, job); void job.finally(() => pending.delete(id)); return job;
+  }); chain = job; pending.set(id, job); void job.then(() => pending.delete(id), () => pending.delete(id)); return job;
 }
 function read(id: string) { try { const entry = JSON.parse(sessionStorage.getItem(`price:${id}`) ?? "null") as Entry | null; if (entry) memory.set(id, entry); return entry ?? undefined; } catch { return undefined; } }

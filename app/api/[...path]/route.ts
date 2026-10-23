@@ -34,25 +34,65 @@ const json = async (r: NextRequest) => {
   }
 };
 const memberTx = memberMutation;
-async function importReport(memberId: string, batch: any) {
+async function importReport(
+  memberId: string,
+  batch: any,
+  cards = new Map<string, ReturnType<typeof cardDto>>(),
+) {
   const wants = await db.want.findMany({
-      where: { memberId },
-      select: { scryfallId: true, qty: true },
-    }),
-    current = Object.fromEntries(wants.map((x) => [x.scryfallId, x.qty]));
+    where: { memberId },
+    select: { scryfallId: true, qty: true },
+  });
+  const current = Object.fromEntries(wants.map((x) => [x.scryfallId, x.qty]));
+  const lines = batch.lines.map((line: any) => ({
+    ...line,
+    scryfallId: line.resolvedScryfallId,
+  }));
+  const proposed = importTargets(current, lines);
+  // Initial staging already resolved canonical metadata. Replayed reviews fetch
+  // missing printings in collection batches rather than one request per card.
+  const missing = proposed.filter((item) => !cards.has(item.scryfallId));
+  for (let offset = 0; offset < missing.length; offset += 75) {
+    if (offset) await new Promise((resolve) => setTimeout(resolve, 110));
+    const response = await fetch("https://api.scryfall.com/cards/collection", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        Accept: "application/json",
+        "User-Agent": "TradeMTG/1.0",
+      },
+      body: JSON.stringify({
+        identifiers: missing
+          .slice(offset, offset + 75)
+          .map((item) => ({ id: item.scryfallId })),
+      }),
+      cache: "no-store",
+    });
+    if (!response.ok)
+      throw new ApiError(
+        503,
+        "CARD_LOOKUP_UNAVAILABLE",
+        "Couldn?t check these cards. Try again.",
+      );
+    for (const card of (await response.json()).data ?? [])
+      cards.set(card.id, cardDto(card));
+  }
+  if (proposed.some((item) => !cards.has(item.scryfallId)))
+    throw new ApiError(
+      503,
+      "CARD_LOOKUP_UNAVAILABLE",
+      "Couldn?t check these cards. Try again.",
+    );
   return {
     batchId: batch.id,
     baseRevision: (
       await db.member.findUniqueOrThrow({ where: { id: memberId } })
     ).revision,
-    lines: batch.lines.map((l: any) => ({
-      ...l,
-      scryfallId: l.resolvedScryfallId,
+    lines,
+    proposedItems: proposed.map((item) => ({
+      ...item,
+      card: cards.get(item.scryfallId)!,
     })),
-    proposedItems: importTargets(
-      current,
-      batch.lines.map((l: any) => ({ ...l, scryfallId: l.resolvedScryfallId })),
-    ),
   };
 }
 export async function GET(
@@ -198,7 +238,12 @@ export async function POST(
         include: { lines: true },
       });
       if (old) {
-        if(old.contentHash!==hash(b.text)) throw new ApiError(409,"IDEMPOTENCY_KEY_REUSED","Request ID was reused with different import text");
+        if (old.contentHash !== hash(b.text))
+          throw new ApiError(
+            409,
+            "IDEMPOTENCY_KEY_REUSED",
+            "Request ID was reused with different import text",
+          );
         return Response.json(await importReport(p[1], old));
       }
       const contentHash = hash(b.text);
@@ -249,7 +294,20 @@ export async function POST(
           return x;
         }),
       );
-      return Response.json(await importReport(p[1], batch), { status: 201 });
+      return Response.json(
+        await importReport(
+          p[1],
+          batch,
+          new Map(
+            lines.flatMap((line) =>
+              line.card && line.scryfallId
+                ? [[line.scryfallId, line.card] as const]
+                : [],
+            ),
+          ),
+        ),
+        { status: 201 },
+      );
     }
     if (p[0] === "wants" && p[2] === "offers") {
       const want = await db.want.findUnique({
@@ -417,7 +475,7 @@ export async function PUT(
               },
               select: { scryfallId: true, qty: true },
             });
-            const current = new Map<string,number>(
+            const current = new Map<string, number>(
               existing.map((x: any) => [x.scryfallId, x.qty]),
             );
             for (const x of b.items) {
