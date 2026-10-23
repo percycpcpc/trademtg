@@ -1,10 +1,24 @@
-import type { Want } from "./client-types";
+import type { Finish, FoilPref, Want } from "./client-types";
 
 export function validQuantity(value: string, max = 9999) {
   return /^\d+$/.test(value) && Number(value) >= 1 && Number(value) <= max;
 }
 export function validPrice(value: string) {
   return /^\d+(?:\.\d{1,2})?$/.test(value) && value.split(".")[0].length <= 10;
+}
+export function validTargetPrice(value: string) {
+  return value === "" || (/^\d+(?:\.\d{1,2})?$/.test(value) && value.split(".")[0].length <= 8);
+}
+export function finishMismatch(pref: FoilPref, finish: Finish) {
+  return pref !== "either" && pref !== finish;
+}
+export function aboveTarget(unitPrice: string, target: string | null) {
+  if (target === null) return false;
+  const cents = (value: string) => {
+    const [whole, fraction = ""] = value.split(".");
+    return BigInt(whole) * 100n + BigInt(fraction.padEnd(2, "0"));
+  };
+  return cents(unitPrice) > cents(target);
 }
 export function amount(value: string, qty = 1) {
   const [whole, fraction = ""] = value.split(".");

@@ -1,7 +1,7 @@
 ﻿"use client";
 import { useEffect, useRef, useState } from "react";
-import type { List, Want } from "../lib/client-types";
-import { serialQueue, validPrice, validQuantity } from "../lib/ux";
+import type { Finish, FoilPref, List, Want } from "../lib/client-types";
+import { serialQueue, validPrice, validQuantity, validTargetPrice } from "../lib/ux";
 export class ApiClientError extends Error {
   constructor(
     message: string,
@@ -38,6 +38,9 @@ export type Draft = {
   kind: "offer" | "quantity";
   qty: string;
   price: string;
+  finish: Finish;
+  foilPref: FoilPref;
+  targetPrice: string;
   dirty: boolean;
   status: string;
   conflict?: boolean;
@@ -118,6 +121,9 @@ export function useList(initial: List) {
       kind: actor === list.member.id ? "quantity" : "offer",
       qty: String(actor === list.member.id ? want.qty : (mine?.qty ?? 1)),
       price: mine?.unitPriceHkd ?? "",
+      finish: mine?.finish ?? "non-foil",
+      foilPref: want.foilPref,
+      targetPrice: want.targetPriceHkd ?? "",
       dirty: false,
       status:
         actor === list.member.id
@@ -128,7 +134,7 @@ export function useList(initial: List) {
       version: retained?.version ?? 0,
     };
   }
-  function edit(draft: Draft, field: "qty" | "price", value: string) {
+  function edit(draft: Draft, field: "qty" | "price" | "finish" | "foilPref" | "targetPrice", value: string) {
     update(draftKey(draft.actor, draft.wantId), {
       ...draft,
       [field]: value,
@@ -136,7 +142,7 @@ export function useList(initial: List) {
       version: draft.version + 1,
       status: "",
       operation: draft.operation,
-    });
+    } as Draft);
   }
   async function save(key: string) {
     let draft = draftRef.current[key];
@@ -146,6 +152,7 @@ export function useList(initial: List) {
     if (
       !validQuantity(draft.qty, draft.kind === "offer" ? want.qty : 9999) ||
       (draft.kind === "offer" && !validPrice(draft.price))
+      || (draft.kind === "quantity" && !validTargetPrice(draft.targetPrice))
     )
       return;
     if (
@@ -165,18 +172,24 @@ export function useList(initial: List) {
             url: `/api/members/${list.member.id}/wants`,
             method: "PUT",
             data: {
-              items: [{ scryfallId: want.scryfallId, qty: Number(draft.qty) }],
+              items: [{
+                scryfallId: want.scryfallId,
+                qty: Number(draft.qty),
+                foilPref: draft.foilPref,
+                targetPriceHkd: draft.targetPrice === "" ? null : draft.targetPrice,
+              }],
             },
           }
         : {
             url: mine
               ? `/api/offers/${mine.id}`
               : `/api/wants/${want.id}/offers`,
-            method: mine ? "PUT" : "POST",
+            method: mine ? "PATCH" : "POST",
             data: {
               offererId: draft.actor,
               qty: Number(draft.qty),
               unitPriceHkd: draft.price,
+              finish: draft.finish,
             },
           });
     const version = draft.operationVersion ?? draft.version;
@@ -229,6 +242,9 @@ export function useList(initial: List) {
         ? draft.qty
         : String(draft.kind === "quantity" ? want.qty : (mine?.qty ?? 1)),
       price: apply ? draft.price : (mine?.unitPriceHkd ?? ""),
+      finish: apply ? draft.finish : (mine?.finish ?? "non-foil"),
+      foilPref: apply ? draft.foilPref : want.foilPref,
+      targetPrice: apply ? draft.targetPrice : (want.targetPriceHkd ?? ""),
       conflict: false,
       operation: undefined,
       operationVersion: undefined,

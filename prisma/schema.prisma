@@ -38,6 +38,8 @@ model Want {
   rarity String
   colors String[] @default([])
   qty Int
+  foilPref String @default("either")
+  targetPriceHkd Decimal? @db.Decimal(12,2)
   createdAt DateTime @default(now()) @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @db.Timestamptz(3)
   member Member @relation(fields:[memberId],references:[id],onDelete:Cascade)
@@ -50,6 +52,7 @@ model Offer {
   offererId String @db.Uuid
   qty Int
   unitPriceHkd Decimal @db.Decimal(12,2)
+  finish String @default("non-foil")
   status OfferStatus @default(open)
   createdAt DateTime @default(now()) @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @db.Timestamptz(3)

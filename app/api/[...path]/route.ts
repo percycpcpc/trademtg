@@ -15,7 +15,10 @@ import {
   normalizeName,
   palette,
   parseMoney,
+  parseFinish,
+  parseFoilPref,
   parseQty,
+  parseTargetPrice,
   serializable,
   snapshot,
   validUuid,
@@ -337,6 +340,7 @@ export async function POST(
               "Offer exceeds wanted quantity",
             );
           const price = parseMoney(b.unitPriceHkd);
+          const finish = parseFinish(b.finish ?? "non-foil");
           const existing = await tx.offer.findUnique({
             where: {
               wantId_offererId: { wantId: want.id, offererId: b.offererId },
@@ -347,7 +351,7 @@ export async function POST(
           const offer = existing
             ? await tx.offer.update({
                 where: { id: existing.id },
-                data: { qty, unitPriceHkd: price, status: "open" },
+                data: { qty, unitPriceHkd: price, finish, status: "open" },
               })
             : await tx.offer.create({
                 data: {
@@ -355,6 +359,7 @@ export async function POST(
                   offererId: b.offererId,
                   qty,
                   unitPriceHkd: price,
+                  finish,
                 },
               });
           return {
@@ -428,6 +433,8 @@ export async function PUT(
           );
         seen.add(x.scryfallId);
         parseQty(x.qty, true);
+        if (x.foilPref !== undefined) parseFoilPref(x.foilPref);
+        if (x.targetPriceHkd !== undefined) parseTargetPrice(x.targetPriceHkd);
       }
       const cards = await Promise.all(
         (b.items ?? [])
@@ -518,8 +525,19 @@ export async function PUT(
                     scryfallId: x.scryfallId,
                   },
                 },
-                create: { memberId: p[1], ...card, qty: x.qty },
-                update: { ...card, qty: x.qty },
+                create: {
+                  memberId: p[1],
+                  ...card,
+                  qty: x.qty,
+                  ...(x.foilPref === undefined ? {} : { foilPref: x.foilPref }),
+                  ...(x.targetPriceHkd === undefined ? {} : { targetPriceHkd: parseTargetPrice(x.targetPriceHkd) }),
+                },
+                update: {
+                  ...card,
+                  qty: x.qty,
+                  ...(x.foilPref === undefined ? {} : { foilPref: x.foilPref }),
+                  ...(x.targetPriceHkd === undefined ? {} : { targetPriceHkd: parseTargetPrice(x.targetPriceHkd) }),
+                },
               });
             }
           }
@@ -563,7 +581,7 @@ export async function PUT(
             );
           const o = await tx.offer.update({
             where: { id: offer.id },
-            data: { qty, unitPriceHkd: parseMoney(b.unitPriceHkd) },
+            data: { qty, unitPriceHkd: parseMoney(b.unitPriceHkd), finish: parseFinish(b.finish ?? "non-foil") },
           });
           return { offer: { ...o, unitPriceHkd: money(o.unitPriceHkd) } };
         }),
@@ -588,10 +606,8 @@ export async function PATCH(
       include: { want: { include: { offers: true } } },
     });
     if (!offer) throw new ApiError(404, "OFFER_NOT_FOUND", "Offer not found");
-    if (b.status !== "withdrawn")
-      throw new ApiError(422, "INVALID_STATUS", "Only withdrawal is supported");
     if (b.actorMemberId !== offer.offererId)
-      throw new ApiError(403, "OFFERER_REQUIRED", "Only offerer may withdraw");
+      throw new ApiError(403, "OFFERER_REQUIRED", "Only offerer may edit");
     return Response.json(
       await memberTx(offer.want.memberId, b, async (tx) => {
         if (offer.status === "accepted")
@@ -606,12 +622,27 @@ export async function PATCH(
             "WANT_HAS_ACCEPTED_OFFER",
             "Offers are frozen",
           );
-        return {
-          offer: await tx.offer.update({
-            where: { id: offer.id },
-            data: { status: "withdrawn" },
-          }),
-        };
+        if (b.status === "withdrawn")
+          return {
+            offer: await tx.offer.update({
+              where: { id: offer.id },
+              data: { status: "withdrawn" },
+            }),
+          };
+        if (b.status !== undefined)
+          throw new ApiError(422, "INVALID_STATUS", "Only withdrawal is supported");
+        const qty = parseQty(b.qty);
+        if (qty > offer.want.qty)
+          throw new ApiError(422, "OFFER_QTY_EXCEEDS_WANT", "Offer exceeds want");
+        const updated = await tx.offer.update({
+          where: { id: offer.id },
+          data: {
+            qty,
+            unitPriceHkd: parseMoney(b.unitPriceHkd),
+            finish: parseFinish(b.finish ?? "non-foil"),
+          },
+        });
+        return { offer: { ...updated, unitPriceHkd: money(updated.unitPriceHkd) } };
       }),
     );
   } catch (e) {

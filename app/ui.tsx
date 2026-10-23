@@ -9,15 +9,18 @@ import {
   useState,
 } from "react";
 import { createPortal } from "react-dom";
-import type { List, Member, Want } from "../lib/client-types";
+import type { List, Member, Offer, Want } from "../lib/client-types";
 import { getReferencePrice } from "../lib/reference-price";
 import {
   amount,
+  aboveTarget,
+  finishMismatch,
   ImportReport,
   reviewCounts,
   tileStatus,
   validPrice,
   validQuantity,
+  validTargetPrice,
 } from "../lib/ux";
 import {
   api,
@@ -635,6 +638,11 @@ function Tile({ want, onClick }: { want: Want; onClick: () => void }) {
         />
       )}
       <i className={`gem ${want.rarity}`}>{want.rarity}</i>
+      {want.foilPref !== "either" && (
+        <small className="finish-pref-badge">
+          {want.foilPref === "foil" ? "FOIL" : "NON"}
+        </small>
+      )}
       {active.length > 0 && (
         <div className="stickers">
           {shown.map((o) => (
@@ -770,6 +778,8 @@ function DraftStatus({
     draft.qty,
     draft.kind === "offer" ? want.qty : 9999,
   );
+  const invalidTarget =
+    draft.kind === "quantity" && !validTargetPrice(draft.targetPrice);
   const paused = draft.kind === "offer" && !!want.acceptedOfferId;
   return (
     <div className="draft-status">
@@ -783,6 +793,8 @@ function DraftStatus({
           Enter a whole number from 1 to{" "}
           {draft.kind === "offer" ? want.qty : 9999}.
         </p>
+      ) : invalidTarget ? (
+        <p role="alert">Enter a target from HK$0 to HK$99999999.99, or leave it blank.</p>
       ) : (
         <span role={draft.status.startsWith("Couldn") ? "alert" : "status"}>
           {paused
@@ -893,7 +905,29 @@ function OfferEditor({
           )}
           <small>Enter your own HKD price. Enter 0 for a free offer.</small>
         </label>
+        <fieldset className="segmented-field">
+          <legend>Finish</legend>
+          <div className="segmented">
+            {(["foil", "non-foil"] as const).map((finish) => (
+              <button
+                key={finish}
+                type="button"
+                className={draft.finish === finish ? "selected" : ""}
+                aria-pressed={draft.finish === finish}
+                onClick={() => store.edit(draft, "finish", finish)}
+              >
+                {finish === "foil" ? "Foil" : "Non-foil"}
+              </button>
+            ))}
+          </div>
+        </fieldset>
       </div>
+      {want.targetPriceHkd !== null && (
+        <p className="target-guidance">Buyer expects ≤ HK${amount(want.targetPriceHkd)}</p>
+      )}
+      {validPrice(draft.price) && aboveTarget(draft.price, want.targetPriceHkd) && (
+        <p className="price-warning">⚠ Above buyer target — you can still save this offer.</p>
+      )}
       <p>Your offer saves automatically.</p>
       {validQuantity(draft.qty, want.qty) && validPrice(draft.price) && (
         <p>
@@ -927,6 +961,23 @@ function OfferEditor({
         </ConfirmAction>
       )}
     </section>
+  );
+}
+function OfferFlags({ want, offer }: { want: Want; offer: Offer }) {
+  const mismatch = finishMismatch(want.foilPref, offer.finish);
+  const expensive =
+    offer.status === "open" && aboveTarget(offer.unitPriceHkd, want.targetPriceHkd);
+  return (
+    <small className="offer-flags">
+      <span className="finish-badge">{offer.finish === "foil" ? "F" : "N"}</span>
+      <span>{offer.finish === "foil" ? "foil" : "non-foil"}</span>
+      {mismatch && (
+        <span className="finish-warning" title={`Buyer prefers ${want.foilPref}`} aria-label={`Finish mismatch: buyer prefers ${want.foilPref}`}>
+          ⚠
+        </span>
+      )}
+      {expensive && <span className="price-warning">⚠ Above buyer target</span>}
+    </small>
   );
 }
 function Sheet({
@@ -1015,14 +1066,45 @@ function Sheet({
       )}
       {owner && draft && (
         <section>
-          <label>
-            Copies wanted
-            <input
-              inputMode="numeric"
-              value={draft.qty}
-              onChange={(e) => store.edit(draft, "qty", e.target.value)}
-            />
-          </label>
+          <div className="editor owner-editor">
+            <label>
+              Copies wanted
+              <input
+                inputMode="numeric"
+                value={draft.qty}
+                onChange={(e) => store.edit(draft, "qty", e.target.value)}
+              />
+            </label>
+            <label>
+              Target price (HKD)
+              <span className="money-input">
+                <span>HK$</span>
+                <input
+                  inputMode="decimal"
+                  placeholder="No limit"
+                  value={draft.targetPrice}
+                  onChange={(e) => store.edit(draft, "targetPrice", e.target.value)}
+                />
+              </span>
+              <small>Optional. Blank means no limit.</small>
+            </label>
+            <fieldset className="segmented-field wide">
+              <legend>Foil preference</legend>
+              <div className="segmented three">
+                {(["foil", "non-foil", "either"] as const).map((pref) => (
+                  <button
+                    key={pref}
+                    type="button"
+                    className={draft.foilPref === pref ? "selected" : ""}
+                    aria-pressed={draft.foilPref === pref}
+                    onClick={() => store.edit(draft, "foilPref", pref)}
+                  >
+                    {pref === "foil" ? "Foil" : pref === "non-foil" ? "Non-foil" : "Either"}
+                  </button>
+                ))}
+              </div>
+            </fieldset>
+          </div>
           <DraftStatus draft={draft} store={store} want={want} />
         </section>
       )}
@@ -1045,6 +1127,7 @@ function Sheet({
                   HK${amount(o.unitPriceHkd)} each ? HK$
                   {amount(o.unitPriceHkd, o.qty)} total
                 </span>
+                <OfferFlags want={want} offer={o} />
                 <em>Open</em>
               </article>
             </div>
@@ -1079,6 +1162,7 @@ function Sheet({
                 HK${amount(o.unitPriceHkd)} each · HK$
                 {amount(o.unitPriceHkd, o.qty)} total
               </span>
+              <OfferFlags want={want} offer={o} />
               <em>
                 {o === accepted
                   ? "Accepted"

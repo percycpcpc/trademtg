@@ -98,6 +98,22 @@ export function parseMoney(x: unknown) {
     );
   return new Prisma.Decimal(x);
 }
+export function parseFoilPref(x: unknown) {
+  if (x !== "foil" && x !== "non-foil" && x !== "either")
+    throw new ApiError(422, "INVALID_FOIL_PREFERENCE", "Foil preference must be foil, non-foil, or either");
+  return x;
+}
+export function parseFinish(x: unknown) {
+  if (x !== "foil" && x !== "non-foil")
+    throw new ApiError(422, "INVALID_FINISH", "Finish must be foil or non-foil");
+  return x;
+}
+export function parseTargetPrice(x: unknown) {
+  if (x === null) return null;
+  if (typeof x !== "string" || !/^\d+(?:\.\d{1,2})?$/.test(x) || x.split(".")[0].length > 8)
+    throw new ApiError(422, "INVALID_TARGET_PRICE", "Target price must be null or a decimal string from 0 to 99999999.99");
+  return new Prisma.Decimal(x);
+}
 const include = {
   wants: { include: { offers: { include: { offerer: true } } } },
   imports: { include: { lines: true } },
@@ -120,6 +136,7 @@ export async function snapshot(memberId: string, actor?: string, tx: any = db) {
       },
       qty: o.qty,
       unitPriceHkd: money(o.unitPriceHkd),
+      finish: o.finish,
       status: o.status,
       editable:
         o.offererId === actor &&
@@ -160,6 +177,8 @@ export async function snapshot(memberId: string, actor?: string, tx: any = db) {
       rarity: w.rarity,
       colors: w.colors,
       qty: w.qty,
+      foilPref: w.foilPref,
+      targetPriceHkd: w.targetPriceHkd === null ? null : money(w.targetPriceHkd),
       offers,
       acceptedOfferId: accepted?.id ?? null,
       coveredQty: covered,

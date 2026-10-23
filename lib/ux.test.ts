@@ -1,6 +1,8 @@
 ﻿import { describe, expect, it } from "vitest";
 import {
   amount,
+  aboveTarget,
+  finishMismatch,
   reviewCounts,
   serialQueue,
   tileStatus,
@@ -25,6 +27,26 @@ describe("offer entry", () => {
     for (const value of ["", "0", "1.5", "5"])
       expect(validQuantity(value, 4)).toBe(false);
     expect(validQuantity("4", 4)).toBe(true);
+  });
+});
+describe("finish and target guidance", () => {
+  it.each([
+    ["foil", "foil", false],
+    ["foil", "non-foil", true],
+    ["non-foil", "foil", true],
+    ["non-foil", "non-foil", false],
+    ["either", "foil", false],
+    ["either", "non-foil", false],
+  ] as const)("matches %s preference to %s finish", (pref, finish, expected) => {
+    expect(finishMismatch(pref, finish)).toBe(expected);
+  });
+  it.each([
+    ["10.01", "10.00", true],
+    ["10", "10.00", false],
+    ["9.99", "10", false],
+    ["999", null, false],
+  ] as const)("compares %s against %s", (price, target, expected) => {
+    expect(aboveTarget(price, target)).toBe(expected);
   });
 });
 describe("import review presentation", () => {

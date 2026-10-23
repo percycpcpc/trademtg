@@ -638,6 +638,80 @@ footer {
   border-radius: 4px;
   font-size: 11px;
 }
+.finish-pref-badge {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 2;
+  padding: 2px 5px;
+  border: 1px solid #d8c982;
+  border-radius: 4px;
+  background: #111d;
+  color: #fff1a8;
+  font-size: 9px;
+  letter-spacing: 0.08em;
+}
+.segmented-field {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  color: var(--muted);
+}
+.segmented-field.wide {
+  grid-column: 1 / -1;
+}
+.segmented-field legend {
+  margin-bottom: 6px;
+  font-size: 14px;
+}
+.segmented {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 3px;
+  padding: 3px;
+  border: 1px solid #444;
+  border-radius: 7px;
+  background: #090b0d;
+}
+.segmented.three {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+.segmented button {
+  min-height: 38px;
+  border-color: transparent;
+  background: transparent;
+}
+.segmented button.selected {
+  border-color: var(--acid);
+  background: #344329;
+  color: white;
+}
+.target-guidance {
+  color: #d8e5a7;
+}
+.price-warning,
+.finish-warning {
+  color: #f2b84b;
+}
+.offer-flags {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
+  color: var(--muted);
+}
+.finish-badge {
+  display: inline-grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border: 1px solid #667078;
+  border-radius: 50%;
+  color: white;
+  font-size: 10px;
+  font-weight: 800;
+}
 .backdrop {
   bottom: auto;
   height: 100dvh;
