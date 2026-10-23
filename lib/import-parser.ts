@@ -6,9 +6,9 @@ export function parseImport(text:string):ParsedLine[]{
   let s=rawText.trim(); const base={lineNo:i+1,rawText};
   if(!s||s.startsWith("#")||s.startsWith("//")||headings.test(s)) return {...base,state:"ignored" as const,reason:"Ignored heading, comment, or blank line"};
   const q=s.match(/^(\d+)(?:[xX])?[ \t]+(.+)$/);
-  if(!q) return {...base,state:"unresolved" as const,reason:"Missing or malformed quantity"};
-  const qty=Number(q[1]); s=q[2].trim();
-  if(!Number.isInteger(qty)||qty<1||qty>9999) return {...base,state:"unresolved" as const,reason:"Quantity must be between 1 and 9999"};
+  if(!q&&/^[+-]?(?:\d|\.\d)/.test(s)) return {...base,state:"unresolved" as const,reason:"Quantity must be a whole number between 1 and 9999"};
+  const qty=q?Number(q[1]):1; if(q) s=q[2].trim();
+  if(!Number.isInteger(qty)||qty<1||qty>9999) return {...base,state:"unresolved" as const,reason:"Quantity must be a whole number between 1 and 9999"};
   let changed=true; while(changed){changed=false;const n=s.replace(/[ \t]+(?:\[[^\[\]]*\]|\*[fFeE]\*)$/u,"").trimEnd();if(n!==s){s=n;changed=true}}
   let setCode:string|undefined,collectorNo:string|undefined;
   const p=s.match(/^(.*?)[ \t]+\(([A-Za-z0-9]{2,16})\)(?:[ \t]+([0-9][A-Za-z0-9*\-]*))?$/u);

@@ -26,12 +26,23 @@ describe("import grammar", () => {
         collectorNo: "266",
       },
     ],
+    ["Counterspell", { qty: 1, parsedName: "Counterspell" }],
+    [
+      "Counterspell (MH2) 267",
+      { qty: 1, parsedName: "Counterspell", setCode: "mh2", collectorNo: "267" },
+    ],
   ])("parses %s", (input, want) =>
     expect(parseImport(input)[0]).toMatchObject(want),
   );
-  it.each(["0 Island", "Island", "4xCard", "3 [Creature]"])("reports %s", (x) =>
-    expect(parseImport(x)[0].reason).toBeTruthy(),
+  it.each(["0 Island", "0x Island", "4.5x Island", "2.5 Island", "10000 Island", "10000x Island", "4xCard"])(
+    "reports invalid quantity %s",
+    (x) => expect(parseImport(x)[0]).toMatchObject({
+      state: "unresolved",
+      reason: "Quantity must be a whole number between 1 and 9999",
+    }),
   );
+  it("reports a missing card name", () =>
+    expect(parseImport("3 [Creature]")[0].reason).toBe("Card name is missing"));
   it("keeps unknown candidates", () =>
     expect(parseImport("2 Definitely Not A Card (ABC) 123")[0]).toMatchObject({
       parsedName: "Definitely Not A Card",

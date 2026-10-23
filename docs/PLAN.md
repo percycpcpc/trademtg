@@ -335,7 +335,7 @@ Everything below is a recommendation pending owner approval; locked choices are 
 | 11 | Intentional repeated imports | Add quantities for each new confirmed batch; replay same requestId without adding. Warn on repeated content, retain explicit “Import again” action. |
 | 12 | Unknown/fuzzy imports | Persist unresolved lines visibly outside Want rows; commit known cards, repair later. Require choosing fuzzy suggestions. Never use raw lines as card identities. |
 | 13 | Printing identity | Respect explicit set/collector; separate Scryfall printings may be separate wants. Reuse unique existing printing for name-only re-import; ask if several exist. No foil distinction in want identity. |
-| 14 | Deck sections/parser extensions | Import all recognized card sections into the one list; strip bracket tags and `*F*`/`*E*`. Missing qty or unsupported syntax is reported, never silently guessed. |
+| 14 | Deck sections/parser extensions | Import all recognized card sections into the one list; strip bracket tags and `*F*`/`*E*`. Missing qty defaults to 1 (owner decision 2026-10-23). Unsupported syntax is still reported, never silently guessed. |
 | 15 | Mobile grid and sheets | Two columns even at 320px; 3/4/5/6 at 600/900/1200/1450px. Bottom sheet on mobile, dialog on desktop; full names in sheet. |
 | 16 | Export visibility | Show export only on own list; public endpoint remains consistent with no auth. Resolved cards only, with visible unresolved-count warning. |
 | 17 | Autosave and freshness | 500ms valid-input debounce; serialized writes; retain drafts on conflict. Refresh on focus and every 30s while visible; no realtime infrastructure. |

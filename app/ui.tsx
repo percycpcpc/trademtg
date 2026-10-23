@@ -1673,8 +1673,8 @@ function ImportSheet({
             />
           </label>
           <p>
-            One card per line, starting with a quantity. Existing cards get the
-            pasted quantities added.
+            One card per line. Quantities are optional and default to 1.
+            Existing cards get the pasted quantities added.
           </p>
           <pre>4 Lightning Bolt{"\n"}4x Lightning Bolt (M11) 149</pre>
           <button
