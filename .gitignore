@@ -6,3 +6,6 @@ coverage
 *.tsbuildinfo
 .hermes/
 graft/
+railway_ids.json
+codex-*-output.txt
+_home.html
