@@ -40,6 +40,7 @@ import {
   resolveImportLines,
   validateImportCommit,
 } from "../../../lib/import-service";
+import { isRestrictForeignKeyError } from "../../../lib/prisma-errors";
 const json = async (r: NextRequest) => {
   try {
     return await r.json();
@@ -946,7 +947,12 @@ export async function DELETE(
           await tx.member.delete({ where: { id: target.id } });
         });
       } catch (e: any) {
-        if (e?.code === "P2003" || e?.code === "P2014")
+        console.error(
+          "[member-delete] code=%s message=%s",
+          e?.code,
+          e?.message ?? e,
+        );
+        if (isRestrictForeignKeyError(e))
           throw new ApiError(
             409,
             "MEMBER_HISTORY_EXISTS",
