@@ -114,6 +114,41 @@ export function parseTargetPrice(x: unknown) {
     throw new ApiError(422, "INVALID_TARGET_PRICE", "Target price must be null or a decimal string from 0 to 99999999.99");
   return new Prisma.Decimal(x);
 }
+export function parsePaidBody(b: any) {
+  if (typeof b?.paid !== "boolean")
+    throw new ApiError(422, "INVALID_PAID", "Paid must be true or false");
+  return { paid: b.paid as boolean };
+}
+export const parseDoneBody = parsePaidBody;
+export function parseBorrowBody(b: any) {
+  if (!validUuid(b?.borrowerId) || !validUuid(b?.lenderId) || !validUuid(b?.scryfallId))
+    throw new ApiError(
+      422,
+      "INVALID_BORROW",
+      "Borrower, lender, and card are required",
+    );
+  if (b.borrowerId === b.lenderId)
+    throw new ApiError(
+      400,
+      "BORROW_PARTIES_MUST_DIFFER",
+      "Borrower and lender must be different members",
+    );
+  return {
+    borrowerId: b.borrowerId as string,
+    lenderId: b.lenderId as string,
+    scryfallId: b.scryfallId as string,
+    qty: parseQty(b.qty),
+  };
+}
+export function parseBorrowStatus(x: unknown) {
+  if (x !== "outstanding" && x !== "returned")
+    throw new ApiError(
+      422,
+      "INVALID_BORROW_STATUS",
+      "Borrow status must be outstanding or returned",
+    );
+  return x;
+}
 const include = {
   wants: { include: { offers: { include: { offerer: true } } } },
   imports: { include: { lines: true } },

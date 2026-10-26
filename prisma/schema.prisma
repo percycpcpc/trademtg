@@ -1,98 +1,167 @@
 generator client {
   provider = "prisma-client-js"
 }
+
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
 }
+
 enum OfferStatus {
   open
   accepted
   withdrawn
+  done
 }
+
+enum BorrowStatus {
+  outstanding
+  returned
+}
+
 enum ImportLineState {
   unresolved
   resolved
   ignored
 }
+
 model Member {
-  id String @id @default(uuid()) @db.Uuid
-  name String @unique @db.VarChar(40)
-  nameKey String @unique @db.VarChar(160)
-  color String @db.VarChar(7)
-  revision Int @default(0)
-  createdAt DateTime @default(now()) @db.Timestamptz(3)
-  wants Want[]
-  offers Offer[]
-  imports ImportBatch[]
-  receipts MutationReceipt[]
+  id            String            @id @default(uuid()) @db.Uuid
+  name          String            @unique @db.VarChar(40)
+  nameKey       String            @unique @db.VarChar(160)
+  color         String            @db.VarChar(7)
+  revision      Int               @default(0)
+  createdAt     DateTime          @default(now()) @db.Timestamptz(3)
+  wants         Want[]
+  offers        Offer[]
+  imports       ImportBatch[]
+  receipts      MutationReceipt[]
+  boughtTrades  Trade[]           @relation("TradeBuyer")
+  soldTrades    Trade[]           @relation("TradeSeller")
+  borrowedCards Borrow[]          @relation("BorrowBorrower")
+  lentCards     Borrow[]          @relation("BorrowLender")
 }
+
 model Want {
-  id String @id @default(uuid()) @db.Uuid
-  memberId String @db.Uuid
-  scryfallId String @db.Uuid
-  cardName String
-  imageUrl String?
-  setCode String @db.VarChar(16)
-  collectorNo String
-  rarity String
-  colors String[] @default([])
-  qty Int
-  foilPref String @default("either")
-  targetPriceHkd Decimal? @db.Decimal(12,2)
-  createdAt DateTime @default(now()) @db.Timestamptz(3)
-  updatedAt DateTime @updatedAt @db.Timestamptz(3)
-  member Member @relation(fields:[memberId],references:[id],onDelete:Cascade)
-  offers Offer[]
-  @@unique([memberId,scryfallId])
+  id             String   @id @default(uuid()) @db.Uuid
+  memberId       String   @db.Uuid
+  scryfallId     String   @db.Uuid
+  cardName       String
+  imageUrl       String?
+  setCode        String   @db.VarChar(16)
+  collectorNo    String
+  rarity         String
+  colors         String[] @default([])
+  qty            Int
+  foilPref       String   @default("either")
+  targetPriceHkd Decimal? @db.Decimal(12, 2)
+  createdAt      DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt      DateTime @updatedAt @db.Timestamptz(3)
+  member         Member   @relation(fields: [memberId], references: [id], onDelete: Cascade)
+  offers         Offer[]
+
+  @@unique([memberId, scryfallId])
 }
+
 model Offer {
-  id String @id @default(uuid()) @db.Uuid
-  wantId String @db.Uuid
-  offererId String @db.Uuid
-  qty Int
-  unitPriceHkd Decimal @db.Decimal(12,2)
-  finish String @default("non-foil")
-  status OfferStatus @default(open)
-  createdAt DateTime @default(now()) @db.Timestamptz(3)
-  updatedAt DateTime @updatedAt @db.Timestamptz(3)
-  want Want @relation(fields:[wantId],references:[id],onDelete:Cascade)
-  offerer Member @relation(fields:[offererId],references:[id],onDelete:Cascade)
-  @@unique([wantId,offererId])
+  id           String      @id @default(uuid()) @db.Uuid
+  wantId       String      @db.Uuid
+  offererId    String      @db.Uuid
+  qty          Int
+  unitPriceHkd Decimal     @db.Decimal(12, 2)
+  finish       String      @default("non-foil")
+  status       OfferStatus @default(open)
+  createdAt    DateTime    @default(now()) @db.Timestamptz(3)
+  updatedAt    DateTime    @updatedAt @db.Timestamptz(3)
+  want         Want        @relation(fields: [wantId], references: [id], onDelete: Cascade)
+  offerer      Member      @relation(fields: [offererId], references: [id], onDelete: Cascade)
+  trade        Trade?
+
   @@index([offererId])
 }
+
+model Trade {
+  id            String    @id @default(uuid()) @db.Uuid
+  offerId       String?   @unique @db.Uuid
+  sourceOfferId String?   @db.Uuid
+  buyerId       String    @db.Uuid
+  sellerId      String    @db.Uuid
+  scryfallId    String    @db.Uuid
+  cardName      String
+  imageUrl      String?
+  setCode       String    @db.VarChar(16)
+  collectorNo   String
+  rarity        String
+  finish        String
+  qty           Int
+  deductedQty   Int
+  unitPriceHkd  Decimal   @db.Decimal(12, 2)
+  paidAt        DateTime? @db.Timestamptz(3)
+  finishedAt    DateTime  @default(now()) @db.Timestamptz(3)
+  offer         Offer?    @relation(fields: [offerId], references: [id], onDelete: SetNull)
+  buyer         Member    @relation("TradeBuyer", fields: [buyerId], references: [id], onDelete: Restrict)
+  seller        Member    @relation("TradeSeller", fields: [sellerId], references: [id], onDelete: Restrict)
+
+  @@index([sourceOfferId])
+  @@index([buyerId, finishedAt, id])
+  @@index([sellerId, finishedAt, id])
+}
+
+model Borrow {
+  id         String       @id @default(uuid()) @db.Uuid
+  scryfallId String       @db.Uuid
+  cardName   String
+  imageUrl   String?
+  qty        Int
+  borrowerId String       @db.Uuid
+  lenderId   String       @db.Uuid
+  status     BorrowStatus @default(outstanding)
+  createdAt  DateTime     @default(now()) @db.Timestamptz(3)
+  returnedAt DateTime?    @db.Timestamptz(3)
+  borrower   Member       @relation("BorrowBorrower", fields: [borrowerId], references: [id], onDelete: Restrict)
+  lender     Member       @relation("BorrowLender", fields: [lenderId], references: [id], onDelete: Restrict)
+
+  @@index([borrowerId])
+  @@index([lenderId])
+}
+
 model ImportBatch {
-  id String @id @default(uuid()) @db.Uuid
-  memberId String @db.Uuid
-  requestId String @db.Uuid
-  contentHash String @db.VarChar(64)
-  createdAt DateTime @default(now()) @db.Timestamptz(3)
-  member Member @relation(fields:[memberId],references:[id],onDelete:Cascade)
-  lines ImportLine[]
-  @@unique([memberId,requestId])
+  id          String       @id @default(uuid()) @db.Uuid
+  memberId    String       @db.Uuid
+  requestId   String       @db.Uuid
+  contentHash String       @db.VarChar(64)
+  createdAt   DateTime     @default(now()) @db.Timestamptz(3)
+  member      Member       @relation(fields: [memberId], references: [id], onDelete: Cascade)
+  lines       ImportLine[]
+
+  @@unique([memberId, requestId])
 }
+
 model ImportLine {
-  id String @id @default(uuid()) @db.Uuid
-  batchId String @db.Uuid
-  lineNo Int
-  rawText String
-  parsedName String?
-  qty Int?
-  setCode String?
-  collectorNo String?
-  reason String?
-  state ImportLineState @default(unresolved)
-  resolvedScryfallId String? @db.Uuid
-  batch ImportBatch @relation(fields:[batchId],references:[id],onDelete:Cascade)
-  @@unique([batchId,lineNo])
+  id                 String          @id @default(uuid()) @db.Uuid
+  batchId            String          @db.Uuid
+  lineNo             Int
+  rawText            String
+  parsedName         String?
+  qty                Int?
+  setCode            String?
+  collectorNo        String?
+  reason             String?
+  state              ImportLineState @default(unresolved)
+  resolvedScryfallId String?         @db.Uuid
+  batch              ImportBatch     @relation(fields: [batchId], references: [id], onDelete: Cascade)
+
+  @@unique([batchId, lineNo])
 }
+
 model MutationReceipt {
-  id String @id @default(uuid()) @db.Uuid
-  memberId String @db.Uuid
-  requestId String @db.Uuid
-  payloadHash String @db.VarChar(64)
-  response Json
-  createdAt DateTime @default(now()) @db.Timestamptz(3)
-  member Member @relation(fields:[memberId],references:[id],onDelete:Cascade)
-  @@unique([memberId,requestId])
+  id          String   @id @default(uuid()) @db.Uuid
+  memberId    String   @db.Uuid
+  requestId   String   @db.Uuid
+  payloadHash String   @db.VarChar(64)
+  response    Json
+  createdAt   DateTime @default(now()) @db.Timestamptz(3)
+  member      Member   @relation(fields: [memberId], references: [id], onDelete: Cascade)
+
+  @@unique([memberId, requestId])
 }
