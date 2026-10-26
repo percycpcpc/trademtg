@@ -1,5 +1,6 @@
 ﻿"use client";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import {
   FormEvent,
   ReactNode,
@@ -9,7 +10,8 @@ import {
   useState,
 } from "react";
 import { createPortal } from "react-dom";
-import type { List, Member, Offer, Want } from "../lib/client-types";
+import type { Borrow, List, Member, Offer, Trade, Want } from "../lib/client-types";
+import { composeBorrowedSections } from "../lib/trades-borrowed";
 import { getReferencePrice } from "../lib/reference-price";
 import {
   amount,
@@ -31,6 +33,13 @@ import {
   Operation,
   useList,
 } from "./use-list";
+
+type Tab = "wantlist" | "trades" | "borrowed";
+type TradeCache = { rows: Trade[]; nextCursor: string | null; complete: boolean };
+type MemberTabCache = { trades?: TradeCache; borrows?: Borrow[] };
+const tabCache = new Map<string, MemberTabCache>();
+const activeTab = (value: string | null): Tab =>
+  value === "trades" || value === "borrowed" ? value : "wantlist";
 
 export function Picker() {
   const [members, setMembers] = useState<Member[]>([]),
@@ -293,6 +302,7 @@ function group(want: Want) {
       )[want.colors[0]] ?? "Colorless");
 }
 export function GalleryApp({ initial }: { initial: List }) {
+  const searchParams = useSearchParams();
   const store = useList(initial),
     { list } = store;
   const [members, setMembers] = useState<Member[]>([]),
@@ -301,7 +311,9 @@ export function GalleryApp({ initial }: { initial: List }) {
   const [openWantId, setOpenWantId] = useState<string | null>(null),
     [panel, setPanel] = useState<"import" | "add" | "repair" | null>(null),
     [exporting, setExporting] = useState(false),
-    [notice, setNotice] = useState("");
+    [notice, setNotice] = useState(""),
+    [tab, setTabState] = useState<Tab>(() => activeTab(searchParams.get("tab"))),
+    [cacheVersion, setCacheVersion] = useState(0);
   const owner = actor === list.member.id,
     open = list.wants.find((w) => w.id === openWantId),
     issues = list.unresolvedImports.length;
@@ -341,6 +353,19 @@ export function GalleryApp({ initial }: { initial: List }) {
       setNotice("This card was removed from the list.");
     }
   }, [openWantId, open]);
+  useEffect(() => setTabState(activeTab(searchParams.get("tab"))), [searchParams]);
+  function setTab(next: Tab) {
+    setTabState(next);
+    const url = new URL(window.location.href);
+    if (next === "wantlist") url.searchParams.delete("tab");
+    else url.searchParams.set("tab", next);
+    window.history.replaceState(window.history.state, "", url);
+  }
+  function invalidate(...names: ("trades" | "borrows")[]) {
+    const cached = tabCache.get(list.member.id);
+    if (cached) names.forEach((name) => delete cached[name]);
+    setCacheVersion((value) => value + 1);
+  }
   function choose(id: string) {
     const valid = members.some((m) => m.id === id) ? id : null;
     if (valid) localStorage.setItem("actor", valid);
@@ -373,7 +398,7 @@ export function GalleryApp({ initial }: { initial: List }) {
               onChange={(e) => {
                 const member = members.find((m) => m.id === e.target.value);
                 if (member)
-                  location.href = `/${encodeURIComponent(member.name)}`;
+                  location.href = `/${encodeURIComponent(member.name)}${tab === "wantlist" ? "" : `?tab=${tab}`}`;
               }}
             >
               {!members.length && (
@@ -387,7 +412,7 @@ export function GalleryApp({ initial }: { initial: List }) {
             </select>
           </label>
         </div>
-        {owner && (
+        {owner && tab === "wantlist" && (
           <nav>
             <button className="primary" onClick={() => setPanel("import")}>
               Import list
@@ -416,6 +441,21 @@ export function GalleryApp({ initial }: { initial: List }) {
           </nav>
         )}
       </header>
+      <div className="tabs" role="tablist" aria-label="Member page">
+        {(["wantlist", "trades", "borrowed"] as const).map((value) => (
+          <button
+            key={value}
+            role="tab"
+            aria-selected={tab === value}
+            className={tab === value ? "selected" : ""}
+            onClick={() => setTab(value)}
+          >
+            {value[0].toUpperCase() + value.slice(1)}
+          </button>
+        ))}
+      </div>
+      {tab === "wantlist" ? (
+      <>
       <main className="gallery-main">
         {memberError && (
           <p role="alert">
@@ -557,6 +597,26 @@ export function GalleryApp({ initial }: { initial: List }) {
           offers · {list.total.remainingCopies} copies still needed
         </span>
       </footer>
+      </>
+      ) : tab === "trades" ? (
+        <TradesTab
+          member={list.member}
+          actor={actor}
+          members={members}
+          cacheVersion={cacheVersion}
+          refreshList={() => store.refresh(actor)}
+          invalidateBorrowed={() => invalidate("borrows")}
+        />
+      ) : (
+        <BorrowedTab
+          member={list.member}
+          actor={actor}
+          members={members}
+          cacheVersion={cacheVersion}
+          refreshList={() => store.refresh(actor)}
+          invalidateTrades={() => invalidate("trades")}
+        />
+      )}
       {open && (
         <Sheet
           key={`${open.id}:${actor}`}
@@ -566,6 +626,11 @@ export function GalleryApp({ initial }: { initial: List }) {
           members={members}
           choose={choose}
           close={() => setOpenWantId(null)}
+          onTradeDone={(wantId) => {
+            store.resetWantDrafts(wantId);
+            invalidate("trades", "borrows");
+            setNotice("Saved");
+          }}
         />
       )}
       {panel === "add" && owner && (
@@ -602,9 +667,234 @@ export function GalleryApp({ initial }: { initial: List }) {
   );
 }
 
+async function fetchAllTrades(memberId: string) {
+  const rows: Trade[] = [];
+  let cursor: string | null = null;
+  do {
+    const result = await api(
+      `/api/members/${memberId}/trades?limit=50${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`,
+    );
+    rows.push(...result.trades);
+    cursor = result.nextCursor;
+  } while (cursor);
+  return rows;
+}
+async function fetchMemberRevision(memberId: string) {
+  const result = await api("/api/members");
+  const member = (result.members as Member[]).find((item) => item.id === memberId);
+  if (!member) throw new Error("Member no longer exists");
+  return member.revision;
+}
+
+function CardThumb({ imageUrl, name }: { imageUrl: string | null; name: string }) {
+  const [bad, setBad] = useState(false);
+  return imageUrl && !bad ? (
+    <img className="row-thumb" src={imageUrl} alt="" loading="lazy" onError={() => setBad(true)} />
+  ) : (
+    <div className="row-thumb placeholder"><span>{name}</span></div>
+  );
+}
+
+function TradeStatus({ trade, memberId }: { trade: Trade; memberId: string }) {
+  const total = amount(trade.unitPriceHkd, trade.qty);
+  return trade.paid ? (
+    <span className="status-badge">Paid</span>
+  ) : (
+    <strong className="debt">{trade.buyerId === memberId ? "Owes" : "Owed"} HK${total}</strong>
+  );
+}
+
+function TradeRow({
+  trade,
+  member,
+  actor,
+  onPaid,
+}: {
+  trade: Trade;
+  member: Member;
+  actor: string | null;
+  onPaid: (trade: Trade, paid: boolean) => Promise<void>;
+}) {
+  const [pending, setPending] = useState(false), [error, setError] = useState("");
+  const canToggle = actor === member.id || actor === trade.counterparty.id;
+  async function toggle(paid: boolean, done: () => void) {
+    if (!actor || pending) return;
+    setPending(true);
+    setError("");
+    try {
+      await onPaid(trade, paid);
+      done();
+    } catch (e) {
+      setError(e instanceof ApiClientError && e.status === 409
+        ? "This trade changed elsewhere. The latest state has been loaded."
+        : (e as Error).message);
+    } finally { setPending(false); }
+  }
+  return (
+    <article className="history-row">
+      <CardThumb imageUrl={trade.imageUrl} name={trade.cardName} />
+      <div className="row-card"><b>{trade.cardName}</b><span>{trade.setCode.toUpperCase()} · #{trade.collectorNo} · {trade.finish}</span></div>
+      <span>{trade.qty} × HK${amount(trade.unitPriceHkd)} = <b>HK${amount(trade.unitPriceHkd, trade.qty)}</b></span>
+      <span>with <b style={{ color: trade.counterparty.color }}>{trade.counterparty.name}</b></span>
+      <time dateTime={trade.finishedAt}>{new Date(trade.finishedAt).toLocaleDateString()}</time>
+      <div className="row-actions">
+        <TradeStatus trade={trade} memberId={member.id} />
+        {canToggle ? (
+          <ConfirmAction
+            label={trade.paid ? "Mark unpaid" : "Mark paid"}
+            question={trade.paid ? "Mark this trade unpaid again?" : "Confirm this trade has been paid?"}
+            keep="Cancel"
+          >
+            {(done) => <button disabled={pending} onClick={() => void toggle(!trade.paid, done)}>{pending ? "Saving…" : trade.paid ? "Mark unpaid" : "Mark paid"}</button>}
+          </ConfirmAction>
+        ) : <small>{actor ? "Only the buyer or seller can update payment." : "Choose the buyer or seller to update payment."}</small>}
+        {error && <p role="alert" className="error">{error}</p>}
+      </div>
+    </article>
+  );
+}
+
+function TradesTab({ member, actor, cacheVersion, refreshList, invalidateBorrowed }: {
+  member: Member; actor: string | null; members: Member[]; cacheVersion: number;
+  refreshList: () => Promise<List | undefined>; invalidateBorrowed: () => void;
+}) {
+  const [data, setData] = useState<TradeCache | undefined>(() => tabCache.get(member.id)?.trades);
+  const [loading, setLoading] = useState(!data), [error, setError] = useState(""), [more, setMore] = useState(false);
+  async function load(reset = false) {
+    const current = reset ? undefined : tabCache.get(member.id)?.trades;
+    if (current) { setData(current); setLoading(false); return; }
+    setLoading(true); setError("");
+    try {
+      const result = await api(`/api/members/${member.id}/trades?limit=50`);
+      const next = { rows: result.trades as Trade[], nextCursor: result.nextCursor as string | null, complete: !result.nextCursor };
+      tabCache.set(member.id, { ...tabCache.get(member.id), trades: next });
+      setData(next);
+    } catch (e) { setError((e as Error).message); } finally { setLoading(false); }
+  }
+  useEffect(() => { void load(); }, [member.id, cacheVersion]);
+  async function loadMore() {
+    if (!data?.nextCursor || more) return;
+    setMore(true); setError("");
+    try {
+      const result = await api(`/api/members/${member.id}/trades?limit=50&cursor=${encodeURIComponent(data.nextCursor)}`);
+      const next = { rows: [...data.rows, ...result.trades], nextCursor: result.nextCursor, complete: !result.nextCursor };
+      tabCache.set(member.id, { ...tabCache.get(member.id), trades: next }); setData(next);
+    } catch (e) { setError((e as Error).message); } finally { setMore(false); }
+  }
+  async function paid(trade: Trade, value: boolean) {
+    if (!actor) return;
+    try {
+      const expectedRevision = await fetchMemberRevision(trade.buyerId);
+      await api(`/api/offers/${trade.sourceOfferId}/paid`, { method: "PATCH", body: JSON.stringify({ paid: value, actorMemberId: actor, requestId: crypto.randomUUID(), expectedRevision }) });
+    } finally {
+      await refreshList();
+      tabCache.set(member.id, { ...tabCache.get(member.id), trades: undefined });
+      invalidateBorrowed();
+      await load(true);
+    }
+  }
+  return <main className="list-main"><section className="list-hero"><p>FINISHED TRADES</p><h1>{member.name}’s trades</h1></section>
+    {loading && <p role="status">Loading trades…</p>}
+    {error && <p role="alert" className="error">{error} <button onClick={() => void load(true)}>Try again</button></p>}
+    {!loading && !data?.rows.length && <div className="empty"><p>No finished trades yet — mark an accepted offer done from a wantlist.</p></div>}
+    <div className="history-list">{data?.rows.map((trade) => <TradeRow key={trade.id} trade={trade} member={member} actor={actor} onPaid={paid} />)}</div>
+    {data?.nextCursor && <button disabled={more} onClick={() => void loadMore()}>{more ? "Loading…" : "Load more"}</button>}
+  </main>;
+}
+
+function BorrowRow({ row, member, actor, onChange }: { row: Borrow; member: Member; actor: string | null; onChange: () => Promise<void> }) {
+  const [pending, setPending] = useState(false), [message, setMessage] = useState(""), [error, setError] = useState("");
+  const returned = row.status === "returned";
+  async function toggle() {
+    if (!actor || pending) return;
+    setPending(true); setError(""); setMessage("Saving…");
+    try {
+      const expectedRevision = await fetchMemberRevision(row.borrowerId);
+      await api(`/api/borrows/${row.id}`, { method: "PATCH", body: JSON.stringify({ status: returned ? "outstanding" : "returned", actorMemberId: actor, requestId: crypto.randomUUID(), expectedRevision }) });
+      setMessage("Saved"); await onChange();
+    } catch (e) { setError(e instanceof ApiClientError && e.status === 409 ? "This entry changed elsewhere. The latest state has been loaded." : (e as Error).message); await onChange(); }
+    finally { setPending(false); }
+  }
+  return <article className={`history-row ${returned ? "returned" : ""}`}>
+    <CardThumb imageUrl={row.imageUrl} name={row.cardName} /><div className="row-card"><b>{row.cardName}</b><span>{row.qty} {row.qty === 1 ? "copy" : "copies"}</span></div>
+    <span>{row.borrowerId === member.id ? "from" : "to"} <b style={{ color: row.otherParty.color }}>{row.otherParty.name}</b></span>
+    <time dateTime={row.createdAt}>{new Date(row.createdAt).toLocaleDateString()}</time>
+    <div className="row-actions"><span className="status-badge">{returned ? "Returned" : "Outstanding"}</span>
+      {actor ? <button disabled={pending} onClick={() => void toggle()}>{pending ? "Saving…" : returned ? "Mark outstanding" : "Mark returned"}</button> : <small>Choose your name to update.</small>}
+      {message && !error && <small role="status">{message}</small>}{error && <p role="alert" className="error">{error}</p>}
+    </div>
+  </article>;
+}
+
+function AddBorrowDialog({ direction: initialDirection, member, members, actor, close, saved }: { direction: "borrowed" | "lent"; member: Member; members: Member[]; actor: string | null; close: () => void; saved: () => Promise<void> }) {
+  const [direction, setDirection] = useState(initialDirection), [other, setOther] = useState(""), [card, setCard] = useState<Card>(), [qty, setQty] = useState("1");
+  const [pending, setPending] = useState(false), [error, setError] = useState(""), [status, setStatus] = useState("");
+  const borrowerId = direction === "borrowed" ? member.id : other, lenderId = direction === "borrowed" ? other : member.id;
+  async function submit() {
+    if (!actor || !card || !validQuantity(qty) || !other || borrowerId === lenderId || pending) return;
+    setPending(true); setError(""); setStatus("Saving…");
+    try {
+      const expectedRevision = await fetchMemberRevision(borrowerId);
+      await api("/api/borrows", { method: "POST", body: JSON.stringify({ borrowerId, lenderId, scryfallId: card.scryfallId, qty: Number(qty), actorMemberId: actor, requestId: crypto.randomUUID(), expectedRevision }) });
+      setStatus("Saved"); await saved(); close();
+    } catch (e) { setError(e instanceof ApiClientError && e.status === 409 ? "The ledger changed elsewhere. Review the latest entries and try again." : (e as Error).message); }
+    finally { setPending(false); }
+  }
+  return <Dialog title="Add borrow" subtitle="Log a card loan for any two members." close={close} status={status}>
+    {!actor && <p role="alert">Choose your name in the top bar before logging a borrow.</p>}
+    <fieldset className="segmented-field wide"><legend>Direction</legend><div className="segmented">
+      <button className={direction === "borrowed" ? "selected" : ""} onClick={() => { setDirection("borrowed"); setError(""); }}>{member.name} borrowed from</button>
+      <button className={direction === "lent" ? "selected" : ""} onClick={() => { setDirection("lent"); setError(""); }}>{member.name} lent to</button>
+    </div></fieldset>
+    <label>Other member<select value={other} onChange={(e) => setOther(e.target.value)}><option value="">Choose a member</option>{members.filter((item) => item.id !== member.id).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
+    <CardChooser onPick={setCard} />{card && <CardIdentity card={card} />}
+    <label>Copies<input inputMode="numeric" value={qty} onChange={(e) => setQty(e.target.value)} /></label>
+    {borrowerId && borrowerId === lenderId && <p role="alert" className="error">Borrower and lender must be different.</p>}
+    {error && <p role="alert" className="error">{error}</p>}
+    <button className="primary" disabled={!actor || !card || !other || !validQuantity(qty) || pending} onClick={() => void submit()}>{pending ? "Saving…" : "Add borrow"}</button>
+  </Dialog>;
+}
+
+function BorrowedTab({ member, actor, members, cacheVersion, refreshList, invalidateTrades }: { member: Member; actor: string | null; members: Member[]; cacheVersion: number; refreshList: () => Promise<List | undefined>; invalidateTrades: () => void }) {
+  const [borrows, setBorrows] = useState<Borrow[] | undefined>(() => tabCache.get(member.id)?.borrows), [trades, setTrades] = useState<Trade[] | undefined>(() => tabCache.get(member.id)?.trades?.complete ? tabCache.get(member.id)?.trades?.rows : undefined);
+  const [loading, setLoading] = useState(!borrows || !trades), [error, setError] = useState(""), [add, setAdd] = useState<"borrowed" | "lent" | null>(null);
+  async function load(force = false) {
+    const cached = tabCache.get(member.id);
+    setLoading(true); setError("");
+    try {
+      const [nextBorrows, nextTrades] = await Promise.all([
+        !force && cached?.borrows ? cached.borrows : api(`/api/members/${member.id}/borrows`).then((x) => x.borrows as Borrow[]),
+        !force && cached?.trades?.complete ? cached.trades.rows : fetchAllTrades(member.id),
+      ]);
+      tabCache.set(member.id, { borrows: nextBorrows, trades: { rows: nextTrades, nextCursor: null, complete: true } });
+      setBorrows(nextBorrows); setTrades(nextTrades);
+    } catch (e) { setError((e as Error).message); } finally { setLoading(false); }
+  }
+  useEffect(() => { void load(); }, [member.id, cacheVersion]);
+  async function reloadBorrows() { tabCache.set(member.id, { ...tabCache.get(member.id), borrows: undefined }); await refreshList(); await load(true); }
+  async function paid(trade: Trade, value: boolean) {
+    if (!actor) return;
+    try {
+      const expectedRevision = await fetchMemberRevision(trade.buyerId);
+      await api(`/api/offers/${trade.sourceOfferId}/paid`, { method: "PATCH", body: JSON.stringify({ paid: value, actorMemberId: actor, requestId: crypto.randomUUID(), expectedRevision }) });
+    }
+    finally { invalidateTrades(); await refreshList(); await load(true); }
+  }
+  const sections = composeBorrowedSections(member.id, borrows ?? [], trades ?? []);
+  const section = (title: string, direction: "borrowed" | "lent", ledger: Borrow[], debts: Trade[]) => <section className="borrow-section"><div className="section-heading"><h2>{title}</h2><button className="primary" onClick={() => setAdd(direction)}>Add borrow</button></div>
+    {!ledger.length && !debts.length && <p className="muted">{direction === "borrowed" ? "No borrowed cards or unpaid purchases." : "No lent cards or unpaid sales."}</p>}
+    <div className="history-list">{debts.map((trade) => <TradeRow key={`debt-${trade.id}`} trade={trade} member={member} actor={actor} onPaid={paid} />)}{ledger.map((row) => <BorrowRow key={row.id} row={row} member={member} actor={actor} onChange={reloadBorrows} />)}</div>
+  </section>;
+  return <main className="list-main"><section className="list-hero"><p>BORROWED LEDGER</p><h1>{member.name}’s cards and debts</h1></section>
+    {loading && <p role="status">Loading borrowed cards…</p>}{error && <p role="alert" className="error">{error} <button onClick={() => void load(true)}>Try again</button></p>}
+    {!loading && <>{section("Borrowed by me", "borrowed", sections.owes.borrows, sections.owes.trades)}{section("Lent out", "lent", sections.owed.borrows, sections.owed.trades)}</>}
+    {add && <AddBorrowDialog direction={add} member={member} members={members} actor={actor} close={() => setAdd(null)} saved={reloadBorrows} />}
+  </main>;
+}
+
 function Tile({ want, onClick }: { want: Want; onClick: () => void }) {
   const active = want.offers
-      .filter((o) => o.status !== "withdrawn")
+      .filter((o) => o.status === "open" || o.status === "accepted")
       .sort(
         (a, b) =>
           a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id),
@@ -766,13 +1056,13 @@ function DraftStatus({
   want: Want;
 }) {
   const mine = want.offers.find(
-    (o) => o.offerer.id === draft.actor && o.status !== "withdrawn",
+    (o) => o.offerer.id === draft.actor && o.status !== "withdrawn" && o.status !== "done",
   );
   const blocked =
     draft.kind === "quantity" &&
     validQuantity(draft.qty) &&
     want.offers.find(
-      (o) => o.status !== "withdrawn" && o.qty > Number(draft.qty),
+      (o) => o.status !== "withdrawn" && o.status !== "done" && o.qty > Number(draft.qty),
     );
   const invalid = !validQuantity(
     draft.qty,
@@ -844,7 +1134,7 @@ function OfferEditor({
 }) {
   const draft = store.getDraft(want, actor),
     mine = want.offers.find(
-      (o) => o.offerer.id === actor && o.status !== "withdrawn",
+      (o) => o.offerer.id === actor && o.status !== "withdrawn" && o.status !== "done",
     );
   const [usd, setUsd] = useState<string | null | undefined>(),
     [failed, setFailed] = useState(false),
@@ -980,6 +1270,32 @@ function OfferFlags({ want, offer }: { want: Want; offer: Offer }) {
     </small>
   );
 }
+function MarkDoneDialog({ want, offer, store, actor, close, complete }: { want: Want; offer: Offer; store: ListStore; actor: string; close: () => void; complete: (wantId: string) => void }) {
+  const [paid, setPaid] = useState<boolean | null>(null), [pending, setPending] = useState(false), [error, setError] = useState(""), [status, setStatus] = useState("");
+  async function submit() {
+    if (paid === null || pending) return;
+    setPending(true); setError(""); setStatus("Saving…");
+    try {
+      await store.mutate({ url: `/api/offers/${offer.id}/done`, method: "POST", data: { paid } }, actor);
+      store.resetWantDrafts(want.id);
+      await store.refresh(actor);
+      setStatus("Saved"); complete(want.id); close();
+    } catch (e) {
+      setError(e instanceof ApiClientError && e.status === 409 ? "This trade changed elsewhere. The latest wantlist has been loaded." : (e as Error).message);
+      await store.refresh(actor);
+    } finally { setPending(false); }
+  }
+  return <Dialog title="Mark trade done" subtitle={`${want.cardName} · ${offer.qty} ${offer.qty === 1 ? "copy" : "copies"}`} close={close} status={status}>
+    <div className="trade-summary"><p><b>Counterparty</b> {offer.offerer.name}</p><p><b>Unit price</b> HK${amount(offer.unitPriceHkd)}</p><p><b>Total</b> HK${amount(offer.unitPriceHkd, offer.qty)}</p></div>
+    <fieldset className="payment-choice"><legend>Payment</legend>
+      <label><input type="radio" name="paid" checked={paid === true} onChange={() => setPaid(true)} /> Paid now</label>
+      <label><input type="radio" name="paid" checked={paid === false} onChange={() => setPaid(false)} /> Pay later</label>
+    </fieldset>
+    <p className="muted">Finishing deducts up to {offer.qty} copies from the wantlist. This cannot be undone.</p>
+    {error && <p role="alert" className="error">{error}</p>}
+    <button className="primary" disabled={paid === null || pending} onClick={() => void submit()}>{pending ? "Saving…" : "Mark trade done"}</button>
+  </Dialog>;
+}
 function Sheet({
   want,
   store,
@@ -987,6 +1303,7 @@ function Sheet({
   members,
   choose,
   close,
+  onTradeDone,
 }: {
   want: Want;
   store: ListStore;
@@ -994,12 +1311,13 @@ function Sheet({
   members: Member[];
   choose: (id: string) => void;
   close: () => void;
+  onTradeDone: (wantId: string) => void;
 }) {
   const owner = actor === store.list.member.id,
-    active = want.offers.filter((o) => o.status !== "withdrawn"),
+    active = want.offers.filter((o) => o.status === "open" || o.status === "accepted"),
     accepted = active.find((o) => o.id === want.acceptedOfferId);
   const draft = actor ? store.getDraft(want, actor) : null;
-  const [notice, setNotice] = useState("");
+  const [notice, setNotice] = useState(""), [finishing, setFinishing] = useState(false);
   return (
     <Dialog
       title={want.cardName}
@@ -1029,6 +1347,13 @@ function Sheet({
               ? "Replace this offer or clear acceptance to reopen offers."
               : "Offers are paused while this offer is accepted."}
           </p>
+          {actor === store.list.member.id || actor === accepted.offerer.id ? (
+            <button className="primary" onClick={() => setFinishing(true)}>Mark trade done</button>
+          ) : actor ? (
+            <p className="muted">Only the buyer or seller can mark this trade done.</p>
+          ) : (
+            <p className="muted">Choose the buyer or seller above to mark this trade done.</p>
+          )}
           {owner && (
             <ConfirmAction
               label="Clear acceptance"
@@ -1268,6 +1593,16 @@ function Sheet({
             </ConfirmAction>
           ))}
         </details>
+      )}
+      {finishing && actor && accepted && (
+        <MarkDoneDialog
+          want={want}
+          offer={accepted}
+          store={store}
+          actor={actor}
+          close={() => setFinishing(false)}
+          complete={(wantId) => { onTradeDone(wantId); close(); }}
+        />
       )}
     </Dialog>
   );

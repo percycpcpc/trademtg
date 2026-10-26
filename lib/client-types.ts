@@ -1,6 +1,9 @@
 export type Member={id:string;name:string;color:string;revision:number};
 export type Finish="foil"|"non-foil";
 export type FoilPref=Finish|"either";
-export type Offer={id:string;wantId:string;offerer:Member;qty:number;unitPriceHkd:string;finish:Finish;status:"open"|"accepted"|"withdrawn";editable:boolean;createdAt:string;updatedAt:string};
+export type Offer={id:string;wantId:string;offerer:Member;qty:number;unitPriceHkd:string;finish:Finish;status:"open"|"accepted"|"withdrawn"|"done";editable:boolean;createdAt:string;updatedAt:string};
 export type Want={id:string;scryfallId:string;cardName:string;imageUrl:string|null;setCode:string;collectorNo:string;rarity:string;colors:string[];qty:number;foilPref:FoilPref;targetPriceHkd:string|null;offers:Offer[];acceptedOfferId:string|null;coveredQty:number;remainingQty:number};
 export type List={member:Member;wants:Want[];unresolvedImports:{id:string;batchId:string;lineNo:number;rawText:string;parsedName:string|null;qty:number|null;reason:string|null}[];total:{amountHkd:string;pricedCards:number;unpricedCards:number;remainingCopies:number}};
+export type Party=Pick<Member,"id"|"name"|"color">;
+export type Trade={id:string;offerId:string|null;sourceOfferId:string;buyerId:string;sellerId:string;scryfallId:string;cardName:string;imageUrl:string|null;setCode:string;collectorNo:string;rarity:string;finish:Finish;qty:number;deductedQty:number;unitPriceHkd:string;paid:boolean;paidAt:string|null;finishedAt:string;counterparty:Party};
+export type Borrow={id:string;scryfallId:string;cardName:string;imageUrl:string|null;qty:number;borrowerId:string;lenderId:string;status:"outstanding"|"returned";createdAt:string;returnedAt:string|null;otherParty:Party};
