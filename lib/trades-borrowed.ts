@@ -29,7 +29,7 @@ export function decodeTradeCursor(value: string | null | undefined) {
   }
 }
 
-type LedgerRole = { borrowerId: string; lenderId: string };
+type LedgerRole = { borrowerId: string; lenderId: string; status?: BorrowStatusValue };
 type TradeRole = { buyerId: string; sellerId: string; paidAt: Date | string | null };
 
 export function composeBorrowedSections<L extends LedgerRole, T extends TradeRole>(
@@ -38,13 +38,14 @@ export function composeBorrowedSections<L extends LedgerRole, T extends TradeRol
   trades: readonly T[],
 ) {
   const unpaid = trades.filter((trade) => !tradePaid(trade.paidAt));
+  const outstanding = ledger.filter((row) => row.status !== "returned");
   return {
     owes: {
-      borrows: ledger.filter((row) => row.borrowerId === memberId),
+      borrows: outstanding.filter((row) => row.borrowerId === memberId),
       trades: unpaid.filter((trade) => trade.buyerId === memberId),
     },
     owed: {
-      borrows: ledger.filter((row) => row.lenderId === memberId),
+      borrows: outstanding.filter((row) => row.lenderId === memberId),
       trades: unpaid.filter((trade) => trade.sellerId === memberId),
     },
   };

@@ -121,24 +121,29 @@ export function parsePaidBody(b: any) {
 }
 export const parseDoneBody = parsePaidBody;
 export function parseBorrowBody(b: any) {
-  if (!validUuid(b?.borrowerId) || !validUuid(b?.lenderId) || !validUuid(b?.scryfallId))
+  const parties = validateBorrowParties(b?.borrowerId, b?.lenderId);
+  if (!validUuid(b?.scryfallId))
     throw new ApiError(
       422,
       "INVALID_BORROW",
       "Borrower, lender, and card are required",
     );
-  if (b.borrowerId === b.lenderId)
+  return {
+    ...parties,
+    scryfallId: b.scryfallId as string,
+    qty: parseQty(b.qty),
+  };
+}
+export function validateBorrowParties(borrowerId: unknown, lenderId: unknown) {
+  if (!validUuid(borrowerId) || !validUuid(lenderId))
+    throw new ApiError(422, "INVALID_BORROW", "Borrower and lender are required");
+  if (borrowerId === lenderId)
     throw new ApiError(
       400,
       "BORROW_PARTIES_MUST_DIFFER",
       "Borrower and lender must be different members",
     );
-  return {
-    borrowerId: b.borrowerId as string,
-    lenderId: b.lenderId as string,
-    scryfallId: b.scryfallId as string,
-    qty: parseQty(b.qty),
-  };
+  return { borrowerId, lenderId };
 }
 export function parseBorrowStatus(x: unknown) {
   if (x !== "outstanding" && x !== "returned")

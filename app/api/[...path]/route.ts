@@ -26,6 +26,7 @@ import {
   serializable,
   snapshot,
   validUuid,
+  validateBorrowParties,
 } from "../../../lib/server";
 import {
   decodeTradeCursor,
@@ -326,6 +327,42 @@ export async function POST(
             include: { borrower: true, lender: true },
           });
           return { borrow: borrowDto(borrow, input.borrowerId) };
+        }),
+        { status: 201 },
+      );
+    }
+    if (p.join("/") === "borrows/import") {
+      common(b);
+      const { borrowerId, lenderId } = validateBorrowParties(b.borrowerId, b.lenderId);
+      if (typeof b.text !== "string" || !b.text.trim())
+        throw new ApiError(422, "INVALID_IMPORT", "Paste at least one card line");
+      const lines = await resolveImportLines(parseImport(b.text));
+      const resolved = lines.filter(
+        (line) => line.state === "unresolved" && line.scryfallId && line.card && line.qty,
+      );
+      const skipped = lines
+        .filter((line) => line.state === "unresolved" && !line.scryfallId)
+        .map((line) => ({
+          line: line.rawText,
+          reason: line.reason ?? (line.parsedName ? "No exact Scryfall match" : "Invalid line"),
+        }));
+      return Response.json(
+        await memberTx(borrowerId, b, async (tx) => {
+          const lender = await tx.member.findUnique({ where: { id: lenderId }, select: { id: true } });
+          if (!lender) throw new ApiError(404, "MEMBER_NOT_FOUND", "Lender not found");
+          if (resolved.length)
+            await tx.borrow.createMany({
+              data: resolved.map((line) => ({
+                borrowerId,
+                lenderId,
+                scryfallId: line.scryfallId!,
+                cardName: line.card!.cardName,
+                imageUrl: line.card!.imageUrl,
+                qty: line.qty!,
+                status: "outstanding" as const,
+              })),
+            });
+          return { added: resolved.length, skipped };
         }),
         { status: 201 },
       );

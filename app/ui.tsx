@@ -804,26 +804,57 @@ function TradesTab({ member, actor, cacheVersion, refreshList, invalidateBorrowe
 
 function BorrowRow({ row, member, actor, onChange }: { row: Borrow; member: Member; actor: string | null; onChange: () => Promise<void> }) {
   const [pending, setPending] = useState(false), [message, setMessage] = useState(""), [error, setError] = useState("");
-  const returned = row.status === "returned";
   async function toggle() {
     if (!actor || pending) return;
     setPending(true); setError(""); setMessage("Saving…");
     try {
       const expectedRevision = await fetchMemberRevision(row.borrowerId);
-      await api(`/api/borrows/${row.id}`, { method: "PATCH", body: JSON.stringify({ status: returned ? "outstanding" : "returned", actorMemberId: actor, requestId: crypto.randomUUID(), expectedRevision }) });
+      await api(`/api/borrows/${row.id}`, { method: "PATCH", body: JSON.stringify({ status: "returned", actorMemberId: actor, requestId: crypto.randomUUID(), expectedRevision }) });
       setMessage("Saved"); await onChange();
     } catch (e) { setError(e instanceof ApiClientError && e.status === 409 ? "This entry changed elsewhere. The latest state has been loaded." : (e as Error).message); await onChange(); }
     finally { setPending(false); }
   }
-  return <article className={`history-row ${returned ? "returned" : ""}`}>
+  return <article className="history-row">
     <CardThumb imageUrl={row.imageUrl} name={row.cardName} /><div className="row-card"><b>{row.cardName}</b><span>{row.qty} {row.qty === 1 ? "copy" : "copies"}</span></div>
     <span>{row.borrowerId === member.id ? "from" : "to"} <b style={{ color: row.otherParty.color }}>{row.otherParty.name}</b></span>
     <time dateTime={row.createdAt}>{new Date(row.createdAt).toLocaleDateString()}</time>
-    <div className="row-actions"><span className="status-badge">{returned ? "Returned" : "Outstanding"}</span>
-      {actor ? <button disabled={pending} onClick={() => void toggle()}>{pending ? "Saving…" : returned ? "Mark outstanding" : "Mark returned"}</button> : <small>Choose your name to update.</small>}
+    <div className="row-actions"><span className="status-badge">Outstanding</span>
+      {actor ? <button disabled={pending} onClick={() => void toggle()}>{pending ? "Saving…" : "Mark returned"}</button> : <small>Choose your name to update.</small>}
       {message && !error && <small role="status">{message}</small>}{error && <p role="alert" className="error">{error}</p>}
     </div>
   </article>;
+}
+
+function ImportBorrowsDialog({ member, members, actor, close, saved }: { member: Member; members: Member[]; actor: string | null; close: () => void; saved: () => Promise<void> }) {
+  const [lenderId, setLenderId] = useState(""), [text, setText] = useState("");
+  const [pending, setPending] = useState(false), [error, setError] = useState("");
+  const [result, setResult] = useState<{ added: number; skipped: { line: string; reason: string }[] }>();
+  async function submit() {
+    if (!actor || !lenderId || !text.trim() || pending) return;
+    setPending(true); setError("");
+    try {
+      const expectedRevision = await fetchMemberRevision(member.id);
+      const response = await api("/api/borrows/import", { method: "POST", body: JSON.stringify({ borrowerId: member.id, lenderId, text, actorMemberId: actor, requestId: crypto.randomUUID(), expectedRevision }) });
+      setResult({ added: response.added, skipped: response.skipped });
+      await saved();
+    } catch (e) {
+      setError(e instanceof ApiClientError && e.status === 409 ? "The ledger changed elsewhere. Review the latest entries and try again." : (e as Error).message);
+    } finally { setPending(false); }
+  }
+  return <Dialog title={`Import cards borrowed by ${member.name}`} subtitle="Paste a list borrowed from one lender." close={close} status={pending ? "Checking card names…" : result ? `Added ${result.added} cards.` : ""}>
+    {result ? <>
+      <p>Added {result.added} cards.</p>
+      {!!result.skipped.length && <div className="report"><h3>Skipped lines</h3>{result.skipped.map((item, index) => <p key={`${index}-${item.line}`}>{item.line} — {item.reason}</p>)}</div>}
+      <button className="primary" onClick={close}>Close</button>
+    </> : <>
+      {!actor && <p role="alert">Choose your name in the top bar before importing.</p>}
+      <label>Lender<select value={lenderId} onChange={(e) => setLenderId(e.target.value)}><option value="">Choose a lender</option>{members.filter((item) => item.id !== member.id).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
+      <label>Paste borrowed cards<textarea disabled={pending} value={text} onChange={(e) => setText(e.target.value)} placeholder={"4 Lightning Bolt\n1x Sol Ring (CMM) 396"} /></label>
+      <p>One card per line. Quantities are optional and default to 1.</p>
+      {error && <p role="alert" className="error">{error}</p>}
+      <button className="primary" disabled={!actor || !lenderId || !text.trim() || pending} onClick={() => void submit()}>{pending ? "Importing…" : "Import cards"}</button>
+    </>}
+  </Dialog>;
 }
 
 function AddBorrowDialog({ direction: initialDirection, member, members, actor, close, saved }: { direction: "borrowed" | "lent"; member: Member; members: Member[]; actor: string | null; close: () => void; saved: () => Promise<void> }) {
@@ -857,7 +888,7 @@ function AddBorrowDialog({ direction: initialDirection, member, members, actor, 
 
 function BorrowedTab({ member, actor, members, cacheVersion, refreshList, invalidateTrades }: { member: Member; actor: string | null; members: Member[]; cacheVersion: number; refreshList: () => Promise<List | undefined>; invalidateTrades: () => void }) {
   const [borrows, setBorrows] = useState<Borrow[] | undefined>(() => tabCache.get(member.id)?.borrows), [trades, setTrades] = useState<Trade[] | undefined>(() => tabCache.get(member.id)?.trades?.complete ? tabCache.get(member.id)?.trades?.rows : undefined);
-  const [loading, setLoading] = useState(!borrows || !trades), [error, setError] = useState(""), [add, setAdd] = useState<"borrowed" | "lent" | null>(null);
+  const [loading, setLoading] = useState(!borrows || !trades), [error, setError] = useState(""), [add, setAdd] = useState<"borrowed" | "lent" | null>(null), [importing, setImporting] = useState(false);
   async function load(force = false) {
     const cached = tabCache.get(member.id);
     setLoading(true); setError("");
@@ -881,7 +912,7 @@ function BorrowedTab({ member, actor, members, cacheVersion, refreshList, invali
     finally { invalidateTrades(); await refreshList(); await load(true); }
   }
   const sections = composeBorrowedSections(member.id, borrows ?? [], trades ?? []);
-  const section = (title: string, direction: "borrowed" | "lent", ledger: Borrow[], debts: Trade[]) => <section className="borrow-section"><div className="section-heading"><h2>{title}</h2><button className="primary" onClick={() => setAdd(direction)}>Add borrow</button></div>
+  const section = (title: string, direction: "borrowed" | "lent", ledger: Borrow[], debts: Trade[]) => <section className="borrow-section"><div className="section-heading"><h2>{title}</h2><div>{direction === "borrowed" && <button onClick={() => setImporting(true)}>Import</button>} <button className="primary" onClick={() => setAdd(direction)}>Add borrow</button></div></div>
     {!ledger.length && !debts.length && <p className="muted">{direction === "borrowed" ? "No borrowed cards or unpaid purchases." : "No lent cards or unpaid sales."}</p>}
     <div className="history-list">{debts.map((trade) => <TradeRow key={`debt-${trade.id}`} trade={trade} member={member} actor={actor} onPaid={paid} />)}{ledger.map((row) => <BorrowRow key={row.id} row={row} member={member} actor={actor} onChange={reloadBorrows} />)}</div>
   </section>;
@@ -889,6 +920,7 @@ function BorrowedTab({ member, actor, members, cacheVersion, refreshList, invali
     {loading && <p role="status">Loading borrowed cards…</p>}{error && <p role="alert" className="error">{error} <button onClick={() => void load(true)}>Try again</button></p>}
     {!loading && <>{section("Borrowed by me", "borrowed", sections.owes.borrows, sections.owes.trades)}{section("Lent out", "lent", sections.owed.borrows, sections.owed.trades)}</>}
     {add && <AddBorrowDialog direction={add} member={member} members={members} actor={actor} close={() => setAdd(null)} saved={reloadBorrows} />}
+    {importing && <ImportBorrowsDialog member={member} members={members} actor={actor} close={() => setImporting(false)} saved={reloadBorrows} />}
   </main>;
 }
 

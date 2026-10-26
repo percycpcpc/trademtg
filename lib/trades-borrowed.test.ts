@@ -12,6 +12,7 @@ import {
   parseBorrowStatus,
   parseDoneBody,
   parsePaidBody,
+  validateBorrowParties,
 } from "./server";
 
 const borrowerId = "00000000-0000-4000-8000-000000000001";
@@ -35,6 +36,11 @@ describe("trade and borrow validation", () => {
     expect(() => parseBorrowBody({ borrowerId, lenderId: borrowerId, scryfallId, qty: 1 })).toThrow(/different/);
     expect(() => parseBorrowBody({ borrowerId, lenderId, scryfallId, qty: 0 })).toThrow(/Quantity/);
     expect(() => parseBorrowBody({ borrowerId, lenderId, scryfallId, qty: 10000 })).toThrow(/Quantity/);
+  });
+  it("validates import parties independently of a card", () => {
+    expect(validateBorrowParties(borrowerId, lenderId)).toEqual({ borrowerId, lenderId });
+    expect(() => validateBorrowParties(borrowerId, borrowerId)).toThrow(/different/);
+    expect(() => validateBorrowParties("bad", lenderId)).toThrow(/required/);
   });
   it.each(["outstanding", "returned"] as const)("accepts borrow status %s", (status) => {
     expect(parseBorrowStatus(status)).toBe(status);
@@ -64,8 +70,9 @@ describe("trade snapshots and history pagination", () => {
 
 describe("borrowed view debt composition", () => {
   const ledger = [
-    { id: "borrowed", borrowerId, lenderId },
-    { id: "lent", borrowerId: lenderId, lenderId: borrowerId },
+    { id: "borrowed", borrowerId, lenderId, status: "outstanding" as const },
+    { id: "lent", borrowerId: lenderId, lenderId: borrowerId, status: "outstanding" as const },
+    { id: "returned", borrowerId, lenderId, status: "returned" as const },
   ];
   const trades = [
     { id: "owes", buyerId: borrowerId, sellerId: lenderId, paidAt: null },
