@@ -16,13 +16,24 @@ import {
   palette,
   parseMoney,
   parseFinish,
+  parseBorrowBody,
+  parseBorrowStatus,
+  parseDoneBody,
   parseFoilPref,
   parseQty,
+  parsePaidBody,
   parseTargetPrice,
   serializable,
   snapshot,
   validUuid,
 } from "../../../lib/server";
+import {
+  decodeTradeCursor,
+  encodeTradeCursor,
+  paginationLimit,
+  tradePaid,
+  tradeSnapshotQuantities,
+} from "../../../lib/trades-borrowed";
 import { parseImport } from "../../../lib/import-parser";
 import {
   importTargets,
@@ -37,6 +48,45 @@ const json = async (r: NextRequest) => {
   }
 };
 const memberTx = memberMutation;
+const party = (member: any) => ({
+  id: member.id,
+  name: member.name,
+  color: member.color,
+});
+const tradeDto = (trade: any, memberId: string) => ({
+  id: trade.id,
+  offerId: trade.offerId,
+  sourceOfferId: trade.sourceOfferId,
+  buyerId: trade.buyerId,
+  sellerId: trade.sellerId,
+  scryfallId: trade.scryfallId,
+  cardName: trade.cardName,
+  imageUrl: trade.imageUrl,
+  setCode: trade.setCode,
+  collectorNo: trade.collectorNo,
+  rarity: trade.rarity,
+  finish: trade.finish,
+  qty: trade.qty,
+  deductedQty: trade.deductedQty,
+  unitPriceHkd: money(trade.unitPriceHkd),
+  paid: tradePaid(trade.paidAt),
+  paidAt: trade.paidAt?.toISOString() ?? null,
+  finishedAt: trade.finishedAt.toISOString(),
+  counterparty: party(trade.buyerId === memberId ? trade.seller : trade.buyer),
+});
+const borrowDto = (borrow: any, memberId: string) => ({
+  id: borrow.id,
+  scryfallId: borrow.scryfallId,
+  cardName: borrow.cardName,
+  imageUrl: borrow.imageUrl,
+  qty: borrow.qty,
+  borrowerId: borrow.borrowerId,
+  lenderId: borrow.lenderId,
+  status: borrow.status,
+  createdAt: borrow.createdAt.toISOString(),
+  returnedAt: borrow.returnedAt?.toISOString() ?? null,
+  otherParty: party(borrow.borrowerId === memberId ? borrow.lender : borrow.borrower),
+});
 async function importReport(
   memberId: string,
   batch: any,
@@ -124,6 +174,42 @@ export async function GET(
           r.nextUrl.searchParams.get("actorMemberId") ?? undefined,
         ),
       );
+    }
+    if (p[0] === "members" && p[2] === "trades" && p.length === 3) {
+      if (!validUuid(p[1]))
+        throw new ApiError(400, "INVALID_ID", "Invalid member ID");
+      const member = await db.member.findUnique({ where: { id: p[1] }, select: { id: true } });
+      if (!member) throw new ApiError(404, "MEMBER_NOT_FOUND", "Member not found");
+      const limit = paginationLimit(r.nextUrl.searchParams.get("limit"));
+      const rawCursor = r.nextUrl.searchParams.get("cursor");
+      const cursor = decodeTradeCursor(rawCursor);
+      if (rawCursor && (!cursor || !validUuid(cursor)))
+        throw new ApiError(400, "INVALID_CURSOR", "Invalid trade cursor");
+      const rows = await db.trade.findMany({
+        where: { OR: [{ buyerId: p[1] }, { sellerId: p[1] }] },
+        include: { buyer: true, seller: true },
+        orderBy: [{ finishedAt: "desc" }, { id: "desc" }],
+        ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
+        take: limit + 1,
+      });
+      const hasMore = rows.length > limit;
+      const page = rows.slice(0, limit);
+      return Response.json({
+        trades: page.map((trade) => tradeDto(trade, p[1])),
+        nextCursor: hasMore ? encodeTradeCursor(page.at(-1)!.id) : null,
+      });
+    }
+    if (p[0] === "members" && p[2] === "borrows" && p.length === 3) {
+      if (!validUuid(p[1]))
+        throw new ApiError(400, "INVALID_ID", "Invalid member ID");
+      const member = await db.member.findUnique({ where: { id: p[1] }, select: { id: true } });
+      if (!member) throw new ApiError(404, "MEMBER_NOT_FOUND", "Member not found");
+      const rows = await db.borrow.findMany({
+        where: { OR: [{ borrowerId: p[1] }, { lenderId: p[1] }] },
+        include: { borrower: true, lender: true },
+        orderBy: [{ status: "asc" }, { createdAt: "desc" }, { id: "desc" }],
+      });
+      return Response.json({ borrows: rows.map((borrow) => borrowDto(borrow, p[1])) });
     }
     if (p[0] === "members" && p[2] === "export") {
       const list = await snapshot(p[1]);
@@ -220,6 +306,28 @@ export async function POST(
         }
         throw e;
       }
+    }
+    if (p.join("/") === "borrows") {
+      common(b);
+      const input = parseBorrowBody(b);
+      const card = await cardById(input.scryfallId);
+      return Response.json(
+        await memberTx(input.borrowerId, b, async (tx) => {
+          const borrow = await tx.borrow.create({
+            data: {
+              borrowerId: input.borrowerId,
+              lenderId: input.lenderId,
+              scryfallId: input.scryfallId,
+              cardName: card.cardName,
+              imageUrl: card.imageUrl,
+              qty: input.qty,
+            },
+            include: { borrower: true, lender: true },
+          });
+          return { borrow: borrowDto(borrow, input.borrowerId) };
+        }),
+        { status: 201 },
+      );
     }
     if (p[0] === "members" && p[2] === "imports") {
       if (b.actorMemberId !== p[1])
@@ -324,6 +432,12 @@ export async function POST(
           "OFFERER_REQUIRED",
           "Acting member must be offerer",
         );
+      if (b.offererId === want.memberId)
+        throw new ApiError(
+          400,
+          "SELF_OFFER_NOT_ALLOWED",
+          "You cannot make an offer on your own want",
+        );
       return Response.json(
         await memberTx(want.memberId, b, async (tx) => {
           if (want.offers.some((o) => o.status === "accepted"))
@@ -341,9 +455,11 @@ export async function POST(
             );
           const price = parseMoney(b.unitPriceHkd);
           const finish = parseFinish(b.finish ?? "non-foil");
-          const existing = await tx.offer.findUnique({
+          const existing = await tx.offer.findFirst({
             where: {
-              wantId_offererId: { wantId: want.id, offererId: b.offererId },
+              wantId: want.id,
+              offererId: b.offererId,
+              status: { not: "done" },
             },
           });
           if (existing && existing.status !== "withdrawn")
@@ -369,6 +485,58 @@ export async function POST(
         { status: 201 },
       );
     }
+    if (p[0] === "offers" && p[2] === "done" && p.length === 3) {
+      common(b);
+      const { paid } = parseDoneBody(b);
+      const foundOffer = await db.offer.findUnique({
+        where: { id: p[1] },
+        include: { want: true },
+      });
+      const historical = foundOffer
+        ? null
+        : await db.trade.findFirst({ where: { sourceOfferId: p[1] } });
+      const buyerId = foundOffer?.want.memberId ?? historical?.buyerId;
+      if (!buyerId) throw new ApiError(404, "OFFER_NOT_FOUND", "Offer not found");
+      if (b.actorMemberId !== buyerId && b.actorMemberId !== (foundOffer?.offererId ?? historical?.sellerId))
+        throw new ApiError(403, "TRADE_PARTY_REQUIRED", "Only a trade party can finish it");
+      return Response.json(
+        await memberTx(buyerId, b, async (tx) => {
+          const offer = await tx.offer.findUnique({ where: { id: p[1] } });
+          if (!offer) throw new ApiError(409, "OFFER_ALREADY_FINISHED", "Offer was already finished");
+          if (offer.status !== "accepted")
+            throw new ApiError(409, "OFFER_NOT_ACCEPTED", "Only an accepted offer can be finished");
+          const want = await tx.want.findUnique({ where: { id: offer.wantId } });
+          if (!want) throw new ApiError(409, "WANT_NOT_FOUND", "Want no longer exists");
+          if (offer.offererId === want.memberId)
+            throw new ApiError(400, "SELF_TRADE_NOT_ALLOWED", "You cannot finish a trade with yourself");
+          const quantities = tradeSnapshotQuantities(offer.qty, want.qty);
+          await tx.offer.update({ where: { id: offer.id }, data: { status: "done" } });
+          const trade = await tx.trade.create({
+            data: {
+              offerId: offer.id,
+              sourceOfferId: offer.id,
+              buyerId: want.memberId,
+              sellerId: offer.offererId,
+              scryfallId: want.scryfallId,
+              cardName: want.cardName,
+              imageUrl: want.imageUrl,
+              setCode: want.setCode,
+              collectorNo: want.collectorNo,
+              rarity: want.rarity,
+              finish: offer.finish,
+              ...quantities,
+              unitPriceHkd: offer.unitPriceHkd,
+              paidAt: paid ? new Date() : null,
+            },
+            include: { buyer: true, seller: true },
+          });
+          const remaining = want.qty - quantities.deductedQty;
+          if (remaining <= 0) await tx.want.delete({ where: { id: want.id } });
+          else await tx.want.update({ where: { id: want.id }, data: { qty: remaining } });
+          return { trade: tradeDto(trade, buyerId) };
+        }),
+      );
+    }
     if (p[0] === "offers" && p[2] === "accept") {
       const offer = await db.offer.findUnique({
         where: { id: p[1] },
@@ -385,6 +553,8 @@ export async function POST(
             current = offers.find((o: any) => o.status === "accepted");
           if (offer.status === "withdrawn")
             throw new ApiError(409, "OFFER_WITHDRAWN", "Offer was withdrawn");
+          if (offer.status === "done")
+            throw new ApiError(409, "OFFER_ALREADY_FINISHED", "Offer was already finished");
           if (
             (current?.id ?? null) !== (b.expectedAcceptedOfferId ?? null) &&
             current?.id !== offer.id
@@ -560,11 +730,11 @@ export async function PUT(
         throw new ApiError(403, "OFFERER_REQUIRED", "Only offerer may edit");
       return Response.json(
         await memberTx(offer.want.memberId, b, async (tx) => {
-          if (offer.status === "accepted")
+          if (offer.status === "accepted" || offer.status === "done")
             throw new ApiError(
               409,
               "ACCEPTED_OFFER_IMMUTABLE",
-              "Accepted offer is immutable",
+              "Accepted or finished offer is immutable",
             );
           if (offer.want.offers.some((o) => o.status === "accepted"))
             throw new ApiError(
@@ -599,7 +769,58 @@ export async function PATCH(
   try {
     const p = (await c.params).path,
       b = await json(r);
-    if (p[0] !== "offers")
+    if (p[0] === "offers" && p[2] === "paid" && p.length === 3) {
+      common(b);
+      const { paid } = parsePaidBody(b);
+      const foundOffer = await db.offer.findUnique({
+        where: { id: p[1] },
+        include: { want: true },
+      });
+      const foundTrade = await db.trade.findFirst({
+        where: { OR: [{ offerId: p[1] }, { sourceOfferId: p[1] }] },
+      });
+      const buyerId = foundTrade?.buyerId ?? foundOffer?.want.memberId;
+      const sellerId = foundTrade?.sellerId ?? foundOffer?.offererId;
+      if (!buyerId || !sellerId)
+        throw new ApiError(404, "TRADE_NOT_FOUND", "Finished trade not found");
+      if (b.actorMemberId !== buyerId && b.actorMemberId !== sellerId)
+        throw new ApiError(403, "TRADE_PARTY_REQUIRED", "Only a trade party can update payment");
+      return Response.json(
+        await memberTx(buyerId, b, async (tx) => {
+          const offer = await tx.offer.findUnique({ where: { id: p[1] } });
+          if (offer && offer.status !== "done")
+            throw new ApiError(409, "OFFER_NOT_DONE", "Only a finished offer can update payment");
+          const trade = await tx.trade.findFirst({
+            where: { OR: [{ offerId: p[1] }, { sourceOfferId: p[1] }] },
+          });
+          if (!trade)
+            throw new ApiError(404, "TRADE_NOT_FOUND", "Finished trade not found");
+          const updated = await tx.trade.update({
+            where: { id: trade.id },
+            data: { paidAt: paid ? new Date() : null },
+            include: { buyer: true, seller: true },
+          });
+          return { trade: tradeDto(updated, buyerId) };
+        }),
+      );
+    }
+    if (p[0] === "borrows" && p.length === 2) {
+      common(b);
+      const status = parseBorrowStatus(b.status);
+      const found = await db.borrow.findUnique({ where: { id: p[1] } });
+      if (!found) throw new ApiError(404, "BORROW_NOT_FOUND", "Borrow entry not found");
+      return Response.json(
+        await memberTx(found.borrowerId, b, async (tx) => {
+          const borrow = await tx.borrow.update({
+            where: { id: found.id },
+            data: { status, returnedAt: status === "returned" ? new Date() : null },
+            include: { borrower: true, lender: true },
+          });
+          return { borrow: borrowDto(borrow, found.borrowerId) };
+        }),
+      );
+    }
+    if (p[0] !== "offers" || p.length !== 2)
       throw new ApiError(404, "NOT_FOUND", "Route not found");
     const offer = await db.offer.findUnique({
       where: { id: p[1] },
@@ -610,11 +831,11 @@ export async function PATCH(
       throw new ApiError(403, "OFFERER_REQUIRED", "Only offerer may edit");
     return Response.json(
       await memberTx(offer.want.memberId, b, async (tx) => {
-        if (offer.status === "accepted")
+        if (offer.status === "accepted" || offer.status === "done")
           throw new ApiError(
             409,
             "ACCEPTED_OFFER_IMMUTABLE",
-            "Accepted offer is immutable",
+            "Accepted or finished offer is immutable",
           );
         if (offer.want.offers.some((o) => o.status === "accepted"))
           throw new ApiError(
@@ -713,16 +934,26 @@ export async function DELETE(
             .filter((x) => x !== target.id),
         ),
       ].sort();
-      await db.$transaction(async (tx) => {
-        for (const id of affected) {
-          await lockMember(tx, id);
-          await tx.member.update({
-            where: { id },
-            data: { revision: { increment: 1 } },
-          });
-        }
-        await tx.member.delete({ where: { id: target.id } });
-      });
+      try {
+        await db.$transaction(async (tx) => {
+          for (const id of affected) {
+            await lockMember(tx, id);
+            await tx.member.update({
+              where: { id },
+              data: { revision: { increment: 1 } },
+            });
+          }
+          await tx.member.delete({ where: { id: target.id } });
+        });
+      } catch (e: any) {
+        if (e?.code === "P2003")
+          throw new ApiError(
+            409,
+            "MEMBER_HISTORY_EXISTS",
+            "This member cannot be deleted because trade or borrowing history references them",
+          );
+        throw e;
+      }
       return Response.json({
         deletedId: target.id,
         affectedMemberIds: affected,

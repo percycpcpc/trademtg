@@ -111,7 +111,7 @@ export function useList(initial: List) {
   }
   function getDraft(want: Want, actor: string): Draft {
     const mine = want.offers.find(
-      (o) => o.offerer.id === actor && o.status !== "withdrawn",
+      (o) => o.offerer.id === actor && o.status !== "withdrawn" && o.status !== "done",
     );
     const retained = draftRef.current[draftKey(actor, want.id)];
     if (retained?.dirty) return retained;
@@ -158,12 +158,12 @@ export function useList(initial: List) {
     if (
       draft.kind === "quantity" &&
       want.offers.some(
-        (o) => o.status !== "withdrawn" && o.qty > Number(draft.qty),
+        (o) => o.status !== "withdrawn" && o.status !== "done" && o.qty > Number(draft.qty),
       )
     )
       return;
     const mine = want.offers.find(
-      (o) => o.offerer.id === draft.actor && o.status !== "withdrawn",
+      (o) => o.offerer.id === draft.actor && o.status !== "withdrawn" && o.status !== "done",
     );
     const operation =
       draft.operation ??
@@ -218,12 +218,15 @@ export function useList(initial: List) {
     } catch (error) {
       draft = draftRef.current[key];
       const conflict = error instanceof ApiClientError && error.status === 409;
+      const friendly = error instanceof ApiClientError && error.body?.error?.code === "SELF_OFFER_NOT_ALLOWED"
+        ? "You cannot make an offer on your own want."
+        : "Couldn’t save. Your changes are kept.";
       update(key, {
         ...draft,
         operation: conflict ? undefined : operation,
         operationVersion: conflict ? undefined : version,
         conflict,
-        status: "Couldn’t save. Your changes are kept.",
+        status: friendly,
       });
     } finally {
       saving.current.delete(key);
@@ -234,7 +237,7 @@ export function useList(initial: List) {
     const want = latest.current.wants.find((w) => w.id === draft.wantId);
     if (!want) return;
     const mine = want.offers.find(
-      (o) => o.offerer.id === draft.actor && o.status !== "withdrawn",
+      (o) => o.offerer.id === draft.actor && o.status !== "withdrawn" && o.status !== "done",
     );
     update(key, {
       ...draft,
@@ -253,6 +256,12 @@ export function useList(initial: List) {
       version: draft.version + 1,
     });
   }
+  function resetWantDrafts(wantId: string) {
+    draftRef.current = Object.fromEntries(
+      Object.entries(draftRef.current).filter(([, draft]) => draft.wantId !== wantId),
+    );
+    setDrafts(draftRef.current);
+  }
   useEffect(() => {
     const timers = Object.entries(drafts)
       .filter(([, d]) => d.dirty && !d.conflict && !d.status)
@@ -269,6 +278,7 @@ export function useList(initial: List) {
     edit,
     save,
     resolve,
+    resetWantDrafts,
     drafts,
   };
 }
