@@ -40,9 +40,46 @@ Interpretation for per-person lists: each member's wantlist page IS this gallery
 - `PUT /api/members/:id/wants` — absolute-set import merge (idempotent repair: PUT correct scryfallId with absolute qty; qty 0 deletes)
 - `POST /api/wants/:wantId/offers {offererId, qty, unitPriceHkd}`, `PATCH /api/offers/:id` (edit/withdraw), `POST /api/offers/:id/accept` (list owner only; transaction unaccepts siblings)
 
-## Open items for the plan
+## Open items for the plan (original build — resolved)
 
-- IA: landing = member picker → `/[name]` list. All-lists overview needed? (Owner lean: no, or a tiny member-switcher.)
-- Sticker rendering: pure CSS overlay vs canvas — recommend CSS (zoom/perf simplicity).
-- HKD↔USD: display reference as `~US$X (TCG mkt)` next to HKD input; no auto-conversion.
-- Deploy details: Railway GraphQL provisioning, Dockerfile with `COPY /app/data` not needed (no JSON catalog; Postgres only), `$PORT` listen, migrations at boot.
+(The eight open items from the 2026-10-21 plan pass were resolved during the build; see git history.)
+
+## Feature: Finished trades + borrowed ledger (owner-approved 2026-10-26, all 8 decisions LOCKED)
+
+Extends the trading app with trade completion, trade history, and card borrowing. Ease-of-first-use and the existing UX contract still apply (dark theme, inline confirms, no native dialogs, no auth).
+
+### Owner decisions (LOCKED)
+
+1. **Borrowed = both kinds.** (a) A standalone **lending ledger** — anyone logs "member A borrowed card X × N from member B", fully independent of wants/offers. (b) **Unpaid finished trades** automatically surface as debts in the borrowed view.
+2. **Finish = manual "mark done".** Either party clicks done on an accepted offer; it moves to the finished-trades list, which is **read-only history** (no delete, no edit of terms).
+3. **Auto-deduct on finish.** Want qty decreases by the traded qty; the want deletes at 0. Deduct `min(qty, want.qty)` to survive manual qty edits between accept and done. Re-import can re-add the card later (absolute-set merge unchanged).
+4. **Mark-done flow asks "Paid now / Pay later".** Pay-later auto-creates a debt entry: buyer owes seller `qty × unitPriceHkd` HKD. Paid-now records no debt.
+5. **Lending ledger entry uses the Scryfall autocomplete**, identical to wants — store `scryfallId` + denormalized cardName/imageUrl, **never free-text names**.
+6. **Returns are a toggle**: outstanding ↔ returned; returned rows stay, dimmed, in history (league match-record pattern).
+7. **UI: tabs on the member page** — **Wantlist / Trades / Borrowed** — default Wantlist; the existing gallery is untouched.
+8. **Borrowed tab has two sections**: "Borrowed by me" (ledger rows where I'm borrower + my unpaid trade debts) and "Lent out" (ledger rows where I'm lender + done trades where I'm seller and unpaid). Outstanding first, returned dimmed below.
+
+### Tab contents
+
+- **Trades** (finished trades where this member is buyer or seller, newest first): card thumb, name, qty, unit price, total HKD, counterparty (name in member color), finished date, and a `Paid` badge or an `Owes HK$X` / `Owed HK$X` marker. From here either party can toggle a done trade paid↔unpaid (covers both misclick repair and "paid later").
+- **Borrowed**: two sections per decision 8. Ledger rows show card, qty, counterparty, date, outstanding/returned state with the toggle.
+
+### Data model (sketch — astra refines)
+
+- `Offer.status` enum gains `done`. On mark-done the offer transitions `accepted → done` (gallery sibling-freeze semantics already treat non-open offers as frozen, so no gallery change needed).
+- **Snapshot table required**: finished trades are history and must survive want deletion (decision 3 deletes wants at 0, and `Want→Offer onDelete: Cascade` would erase the record). `Trade(id, offerId? @unique, buyerId, sellerId, scryfallId, cardName, imageUrl, setCode, qty, unitPriceHkd, paidAt DateTime?, finishedAt DateTime @default(now()))` — debt = `paidAt IS NULL`.
+- `Borrow(id, scryfallId, cardName, imageUrl?, qty, borrowerId, lenderId, status: outstanding|returned, createdAt, returnedAt?)`. No delete — toggle-only, per decision 6.
+
+### API shape (sketch — astra refines)
+
+- `POST /api/offers/:id/done {paid: boolean}` — either party. Transaction: require `status=accepted` → set `done`, snapshot the Trade row, deduct want qty (delete want at ≤0).
+- `PATCH /api/offers/:id/paid {paid: boolean}` — toggle settlement on a `done` offer; sets/clears `Trade.paidAt`.
+- `POST /api/borrows {borrowerId, lenderId, scryfallId, qty}` — anyone (no-auth trust model).
+- `PATCH /api/borrows/:id {status}` — toggle outstanding/returned.
+- Member payload: either extend `GET /api/members/:id` with trades+borrows or add `/api/members/:id/trades` + `/api/members/:id/borrows` — prefer separate endpoints to keep the list payload lean (astra decides).
+
+### Open items for the plan
+
+- **Undo mark-done**: misclick recovery. Recommend: a `Revert` action on the trades tab (inline confirm) that reopens the offer (`done → accepted`) and restores want qty by the traded amount, deleting the Trade row. Cheaper alternative: no undo, rely on re-import. Astra weighs in.
+- **Tab deep-linking**: persist active tab in the URL (`?tab=trades`) so members can share links — recommend yes.
+- Trades-tab pagination/cap (~20–30 cards per wantlist, group of ~10 → history grows slowly; likely no pagination needed — astra confirms).
