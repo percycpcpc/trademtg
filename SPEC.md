@@ -78,6 +78,11 @@ Extends the trading app with trade completion, trade history, and card borrowing
 - `PATCH /api/borrows/:id {status}` — toggle outstanding/returned.
 - Member payload: either extend `GET /api/members/:id` with trades+borrows or add `/api/members/:id/trades` + `/api/members/:id/borrows` — prefer separate endpoints to keep the list payload lean (astra decides).
 
+### Amendments (owner-approved 2026-10-26, second round)
+
+9. **Returned borrows disappear from display.** Both sections render outstanding rows only; the return action removes the row from view immediately (row stays `returned` in DB; API toggle unchanged, but the UI has no un-toggle).
+10. **Borrow list import.** The Borrowed tab gets an Import affordance feeding "Borrowed by me" only: dialog = lender picker + paste-a-list textarea, reusing the wantlist decklist parser (`N`/`Nx` prefixes, set codes, `[Type]` tags, foil flags stripped, bare line = qty 1). One lender per import; borrower = page member; all resolved lines append as `outstanding` Borrow rows (duplicates allowed — multiple outstanding loans of the same card stay legal). Unknown/unresolvable lines are listed in the result dialog and skipped — no repair queue.
+
 ### Open items for the plan
 
 - **Undo mark-done**: misclick recovery. Recommend: a `Revert` action on the trades tab (inline confirm) that reopens the offer (`done → accepted`) and restores want qty by the traded amount, deleting the Trade row. Cheaper alternative: no undo, rely on re-import. Astra weighs in.
