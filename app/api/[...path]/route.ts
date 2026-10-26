@@ -946,7 +946,7 @@ export async function DELETE(
           await tx.member.delete({ where: { id: target.id } });
         });
       } catch (e: any) {
-        if (e?.code === "P2003")
+        if (e?.code === "P2003" || e?.code === "P2014")
           throw new ApiError(
             409,
             "MEMBER_HISTORY_EXISTS",
