@@ -1,6 +1,11 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { mergeResolved, parseImport } from "./import-parser";
-import { importTargets, validateImportCommit } from "./import-service";
+import {
+  importNamesMatch,
+  importTargets,
+  resolveImportLines,
+  validateImportCommit,
+} from "./import-service";
 describe("import grammar", () => {
   it.each([
     [
@@ -65,6 +70,50 @@ describe("merge", () => {
         { scryfallId: "a", qty: 1 },
       ]),
     ).toEqual({ a: 6 }));
+});
+describe("import resolution", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it.each([
+    ["Lightning Bolt", "lightning bolt", true],
+    ["  Lightning\t  Bolt ", "Lightning Bolt", true],
+    ["Lightning Bolt", "Air Servant", false],
+    ["Fire // Ice", "Fire", false],
+  ])("compares export name %j with found name %j", (parsed, found, match) =>
+    expect(importNamesMatch(parsed, found)).toBe(match),
+  );
+
+  it("falls through from a mismatched set and collector number to name and set", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          data: [
+            { id: "air-servant", name: "Air Servant", set: "m11", collector_number: "42" },
+          ],
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          data: [
+            { id: "lightning-bolt", name: "Lightning Bolt", set: "m11", collector_number: "149" },
+          ],
+        }),
+      });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const [resolved] = await resolveImportLines(
+      parseImport("1 Lightning Bolt (m11) 42"),
+    );
+
+    expect(resolved.scryfallId).toBe("lightning-bolt");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body as string)).toEqual({
+      identifiers: [{ name: "Lightning Bolt", set: "m11" }],
+    });
+  });
 });
 describe("import commit semantics",()=>{
   it("sums duplicate resolved lines into an absolute target",()=>expect(importTargets({a:2},[{scryfallId:"a",qty:3,state:"unresolved"},{scryfallId:"a",qty:1,state:"unresolved"},{scryfallId:"a",qty:9,state:"resolved"}])).toEqual([{scryfallId:"a",currentQty:2,importQty:4,targetQty:6}]));

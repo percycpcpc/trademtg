@@ -5,6 +5,11 @@ export type ResolvedLine = ParsedLine & {
   card?: ReturnType<typeof cardDto>;
 };
 const key = (x: any) => JSON.stringify(Object.fromEntries(Object.entries(x).map(([k,v])=>[k,typeof v==="string"?v.toLocaleLowerCase("en-US"):v])));
+const normalizedCardName = (name: string) =>
+  name.trim().replace(/\s+/gu, " ").toLocaleLowerCase("en-US");
+export function importNamesMatch(parsedName: string, foundName: string) {
+  return normalizedCardName(parsedName) === normalizedCardName(foundName);
+}
 async function lookup(identifiers: any[]) {
   const out = new Map<string, any>();
   for (let i = 0; i < identifiers.length; i += 75) {
@@ -43,7 +48,7 @@ export async function resolveImportLines(
     .filter(
       (x) => x.line.state === "unresolved" && x.line.parsedName && x.line.qty,
     );
-  for (const make of [
+  for (const [pass, make] of [
     (l: ResolvedLine) =>
       l.setCode && l.collectorNo
         ? { set: l.setCode, collector_number: l.collectorNo }
@@ -51,7 +56,7 @@ export async function resolveImportLines(
     (l: ResolvedLine) =>
       l.setCode ? { name: l.parsedName, set: l.setCode } : null,
     (l: ResolvedLine) => ({ name: l.parsedName }),
-  ]) {
+  ].entries()) {
     const pending = candidates.filter((x) => !result[x.index].scryfallId),
       unique = [
         ...new Map(
@@ -68,7 +73,10 @@ export async function resolveImportLines(
     for (const x of pending) {
       const id = make(x.line),
         card = id && found.get(key(id));
-      if (card) {
+      if (
+        card &&
+        (pass !== 0 || importNamesMatch(x.line.parsedName!, card.name))
+      ) {
         result[x.index].scryfallId = card.id;
         result[x.index].card = cardDto(card);
       }
