@@ -713,7 +713,7 @@ footer {
 }
 .any-version-badge {
   position: absolute;
-  top: 8px;
+  top: 11%;
   left: 0;
   z-index: 2;
   padding: 4px 7px;
@@ -732,6 +732,8 @@ footer {
 .printing-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(92px, 1fr)); gap: 8px; margin: 12px 0; }
 .printing-grid article { position: relative; display: flex; flex-direction: column; align-items: center; gap: 5px; padding: 7px; background: #0d1012; border-radius: 6px; text-align: center; }
 .printing-grid article button { position: absolute; top: 2px; right: 2px; min-width: 28px; min-height: 28px; padding: 0; background: #090b0de8; }
+.all-printings { margin: 22px 0; padding-top: 18px; border-top: 1px solid var(--line); }
+.all-printings-grid { max-height: 320px; overflow: auto; }
 .printing-placeholder { display: flex; align-items: center; justify-content: center; padding: 3px; background: #20262a; font-size: 8px; }
 .printing-search { display: flex; flex-direction: column; gap: 5px; color: var(--muted); font-size: 12px; }
 .printing-search input { background: #090b0d; border: 1px solid #444; color: white; border-radius: 5px; padding: 10px; }

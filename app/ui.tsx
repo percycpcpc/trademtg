@@ -1362,9 +1362,10 @@ function AcceptablePrintings({ want, store, actor, editable, setNotice }: {
     } catch (error) { setStatus((error as Error).message); }
     finally { setPending(false); }
   }
+  if (!editable && !want.printings.length) return null;
   return <section className="acceptable-printings">
     <h3>Acceptable printings</h3>
-    <p className="muted">Optional — tells offerers which printings you know you want. Empty = truly any.</p>
+    <p className="muted">{editable ? "Optional — tells offerers which printings you know you want. Empty = truly any." : "Preferred printings selected by the owner."}</p>
     <div className="printing-grid">
       {want.printings.map((printing) => <article key={printing.id}>
         {printing.imageUrl ? <img className="row-thumb" src={printing.imageUrl} alt="" /> : <span className="row-thumb printing-placeholder">{printing.cardName}</span>}
@@ -1382,6 +1383,28 @@ function AcceptablePrintings({ want, store, actor, editable, setNotice }: {
       </div>
       {status && <p role="status" className="muted">{status}</p>}
     </>}
+  </section>;
+}
+function AllPrintings({ cardName }: { cardName: string }) {
+  const [prints, setPrints] = useState<CardPrint[]>([]), [status, setStatus] = useState("Loading…");
+  useEffect(() => {
+    const controller = new AbortController();
+    api(`/api/cards/prints?name=${encodeURIComponent(cardName)}`, { signal: controller.signal })
+      .then((result) => { setPrints(result.prints); setStatus(""); })
+      .catch((error) => { if (error.name !== "AbortError") setStatus((error as Error).message); });
+    return () => controller.abort();
+  }, [cardName]);
+  return <section className="all-printings">
+    <h3>All printings · {prints.length}</h3>
+    <div className="printing-grid all-printings-grid">
+      {prints.map((print) => <article key={print.scryfallId}>
+        {print.imageUrl ? <img className="row-thumb" src={print.imageUrl} alt="" /> : <span className="row-thumb printing-placeholder">{print.cardName}</span>}
+        <small>{print.setCode.toUpperCase()} · #{print.collectorNo}</small>
+        <small className="muted">{print.rarity}</small>
+      </article>)}
+    </div>
+    {!status && !prints.length && <p className="muted">No printings found.</p>}
+    {status && <p role="status" className="muted">{status}</p>}
   </section>;
 }
 function Sheet({
@@ -1499,6 +1522,7 @@ function Sheet({
         </section>
       )}
       <AcceptablePrintings want={want} store={store} actor={actor} editable={owner} setNotice={setNotice} />
+      <AllPrintings cardName={want.cardName} />
       {actor && !owner && (
         <OfferEditor want={want} store={store} actor={actor} />
       )}
