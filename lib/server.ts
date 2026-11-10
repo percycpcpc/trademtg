@@ -155,7 +155,10 @@ export function parseBorrowStatus(x: unknown) {
   return x;
 }
 const include = {
-  wants: { include: { offers: { include: { offerer: true } } } },
+  wants: { include: {
+    offers: { include: { offerer: true } },
+    printings: { orderBy: { createdAt: "asc" as const } },
+  } },
   imports: { include: { lines: true } },
 } as const;
 export async function snapshot(memberId: string, actor?: string, tx: any = db) {
@@ -217,6 +220,15 @@ export async function snapshot(memberId: string, actor?: string, tx: any = db) {
       typeLine: w.typeLine,
       qty: w.qty,
       foilPref: w.foilPref,
+      anyVersion: w.anyVersion,
+      printings: w.printings.map((printing: any) => ({
+        id: printing.id,
+        scryfallId: printing.scryfallId,
+        cardName: printing.cardName,
+        setCode: printing.setCode,
+        collectorNo: printing.collectorNo,
+        imageUrl: printing.imageUrl,
+      })),
       targetPriceHkd: w.targetPriceHkd === null ? null : money(w.targetPriceHkd),
       offers,
       coveredQty: covered,

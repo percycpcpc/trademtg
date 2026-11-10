@@ -20,6 +20,7 @@ import {
   finishMismatch,
   groupWants,
   ImportReport,
+  printingCaption,
   reviewCounts,
   tileStatus,
   validPrice,
@@ -1013,7 +1014,7 @@ function Tile({ want, onClick }: { want: Want; onClick: () => void }) {
   const [bad, setBad] = useState(false),
     [loaded, setLoaded] = useState(false),
     status = tileStatus(want);
-  return (
+  return <article className="tile-wrap">
     <button
       className="tile"
       onClick={onClick}
@@ -1040,6 +1041,7 @@ function Tile({ want, onClick }: { want: Want; onClick: () => void }) {
           {want.foilPref === "foil" ? "FOIL" : "NON"}
         </small>
       )}
+      {want.anyVersion && <span className="any-version-badge">ANY VERSION</span>}
       {active.length > 0 && (
         <div className="stickers">
           {shown.map((o) => (
@@ -1060,7 +1062,8 @@ function Tile({ want, onClick }: { want: Want; onClick: () => void }) {
       )}
       <div className="need">{status}</div>
     </button>
-  );
+    <div className="tile-caption"><b>{want.cardName}</b>{want.anyVersion && <small>{printingCaption(want.printings)}</small>}</div>
+  </article>;
 }
 
 // Explicit actions retain their operation object, including the original request ID, on retry.
@@ -1395,7 +1398,7 @@ function MarkDoneDialog({ want, offer, store, actor, close, complete }: { want: 
     <button className="primary" disabled={paid === null || pending} onClick={() => void submit()}>{pending ? "Saving…" : "Mark trade done"}</button>
   </Dialog>;
 }
-type CardPrint = Card & { rarity: string; releasedAt: string; finishes: string[] };
+type CardPrint = Card & { imageUrl: string | null; rarity: string; releasedAt: string; finishes: string[] };
 function PrintingDialog({ want, store, actor, close, changed }: {
   want: Want; store: ListStore; actor: string; close: () => void; changed: (message: string) => void;
 }) {
@@ -1441,6 +1444,62 @@ function PrintingDialog({ want, store, actor, close, changed }: {
     </div>}
   </Dialog>;
 }
+function AcceptablePrintings({ want, store, actor, editable, setNotice }: {
+  want: Want; store: ListStore; actor: string | null; editable: boolean; setNotice: (message: string) => void;
+}) {
+  const [query, setQuery] = useState(want.cardName), [prints, setPrints] = useState<CardPrint[]>([]);
+  const [status, setStatus] = useState(""), [pending, setPending] = useState(false);
+  useEffect(() => {
+    if (!editable || !query.trim()) { setPrints([]); return; }
+    const controller = new AbortController();
+    const timer = setTimeout(() => {
+      setStatus("Searching…");
+      api(`/api/cards/prints?name=${encodeURIComponent(query.trim())}`, { signal: controller.signal })
+        .then((result) => { setPrints(result.prints); setStatus(result.prints.length ? "" : "No printings found."); })
+        .catch((error) => { if (error.name !== "AbortError") setStatus((error as Error).message); });
+    }, 200);
+    return () => { controller.abort(); clearTimeout(timer); };
+  }, [editable, query]);
+  async function add(print: CardPrint) {
+    if (!actor || pending || want.printings.some((item) => item.scryfallId === print.scryfallId)) return;
+    setPending(true); setStatus("Saving…");
+    try {
+      await store.mutate({ url: `/api/wants/${want.id}/printings`, method: "POST", data: { scryfallId: print.scryfallId } }, actor);
+      setNotice(`Added ${print.setCode.toUpperCase()} · #${print.collectorNo}`); setStatus("");
+    } catch (error) { setStatus((error as Error).message); }
+    finally { setPending(false); }
+  }
+  async function remove(id: string) {
+    if (!actor || pending) return;
+    setPending(true); setStatus("Saving…");
+    try {
+      await store.mutate({ url: `/api/wants/${want.id}/printings/${id}`, method: "DELETE", data: {} }, actor);
+      setNotice("Acceptable printing removed."); setStatus("");
+    } catch (error) { setStatus((error as Error).message); }
+    finally { setPending(false); }
+  }
+  return <section className="acceptable-printings">
+    <h3>Acceptable printings</h3>
+    <p className="muted">Optional — tells offerers which printings you know you want. Empty = truly any.</p>
+    <div className="printing-grid">
+      {want.printings.map((printing) => <article key={printing.id}>
+        {printing.imageUrl ? <img className="row-thumb" src={printing.imageUrl} alt="" /> : <span className="row-thumb printing-placeholder">{printing.cardName}</span>}
+        <small>{printing.setCode.toUpperCase()} · #{printing.collectorNo}</small>
+        {editable && <button type="button" aria-label={`Remove ${printing.setCode.toUpperCase()} printing`} disabled={pending} onClick={() => void remove(printing.id)}>×</button>}
+      </article>)}
+    </div>
+    {editable && <>
+      <label className="printing-search">Add a printing<input value={query} autoComplete="off" onChange={(event) => setQuery(event.target.value)} /></label>
+      <div className="printing-results">
+        {prints.map((print) => <button type="button" key={print.scryfallId} disabled={pending || want.printings.some((item) => item.scryfallId === print.scryfallId)} onClick={() => void add(print)}>
+          {print.imageUrl ? <img className="row-thumb" src={print.imageUrl} alt="" /> : <span className="row-thumb printing-placeholder">{print.cardName}</span>}
+          <span><b>{print.cardName}</b><small>{print.setCode.toUpperCase()} · #{print.collectorNo}</small></span>
+        </button>)}
+      </div>
+      {status && <p role="status" className="muted">{status}</p>}
+    </>}
+  </section>;
+}
 function Sheet({
   want,
   store,
@@ -1462,7 +1521,16 @@ function Sheet({
     active = want.offers.filter((o) => o.status === "open"),
     pendingExchange = active.find((o) => owner || o.offerer.id === actor);
   const draft = actor ? store.getDraft(want, actor) : null;
-  const [notice, setNotice] = useState(""), [finishing, setFinishing] = useState<Offer | null>(null), [changingPrinting, setChangingPrinting] = useState(false);
+  const [notice, setNotice] = useState(""), [finishing, setFinishing] = useState<Offer | null>(null), [changingPrinting, setChangingPrinting] = useState(false), [anyPending, setAnyPending] = useState(false);
+  async function setAnyVersion(value: boolean) {
+    if (!actor || anyPending || value === want.anyVersion) return;
+    setAnyPending(true); setNotice("Saving…");
+    try {
+      await store.mutate({ url: `/api/wants/${want.id}`, method: "PUT", data: { anyVersion: value } }, actor);
+      setNotice("Any version preference saved.");
+    } catch (error) { setNotice((error as Error).message); }
+    finally { setAnyPending(false); }
+  }
   return (
     <Dialog
       title={want.cardName}
@@ -1475,6 +1543,7 @@ function Sheet({
           : `Need ${want.qty} copies`)
       }
     >
+      {want.anyVersion && <p className="any-version-note">ANY VERSION · {printingCaption(want.printings)}</p>}
       {pendingExchange && (
         <section className="pending-exchange-summary">
           <b>
@@ -1534,10 +1603,18 @@ function Sheet({
                 ))}
               </div>
             </fieldset>
+            <fieldset className="segmented-field wide">
+              <legend>Any version</legend>
+              <div className="segmented">
+                <button type="button" disabled={anyPending} className={want.anyVersion ? "selected" : ""} aria-pressed={want.anyVersion} onClick={() => void setAnyVersion(true)}>Any version</button>
+                <button type="button" disabled={anyPending} className={!want.anyVersion ? "selected" : ""} aria-pressed={!want.anyVersion} onClick={() => void setAnyVersion(false)}>Exact printing</button>
+              </div>
+            </fieldset>
           </div>
           <DraftStatus draft={draft} store={store} want={want} />
         </section>
       )}
+      <AcceptablePrintings want={want} store={store} actor={actor} editable={owner} setNotice={setNotice} />
       {actor && !owner && (
         <OfferEditor want={want} store={store} actor={actor} />
       )}

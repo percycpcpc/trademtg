@@ -88,3 +88,12 @@ Extends the trading app with trade completion, trade history, and card borrowing
 - **Undo mark-done**: misclick recovery. Recommend: a `Revert` action on the trades tab (inline confirm) that reopens the offer (`done → accepted`) and restores want qty by the traded amount, deleting the Trade row. Cheaper alternative: no undo, rely on re-import. Astra weighs in.
 - **Tab deep-linking**: persist active tab in the URL (`?tab=trades`) so members can share links — recommend yes.
 - Trades-tab pagination/cap (~20–30 cards per wantlist, group of ~10 → history grows slowly; likely no pagination needed — astra confirms).
+
+### Feature: group-by filter, printing switcher, bulk skip, deliveries tab, no-accept lifecycle, any-version wants (owner decisions, all shipped 2026-11-10)
+
+- Wantlist gallery has a **Group by** control (Color default / Set / Type), persisted in localStorage, visible to all viewers. Type grouping priority: Land, Battle, Planeswalker, Creature, Instant, Sorcery, Enchantment, Artifact, Other; `Want.typeLine` stored from Scryfall at create, backfilled idempotently at container start (`scripts/backfill-type-lines.mjs`; Dockerfile MUST copy `scripts/` into the runner image).
+- Owner can **change a want's printing** via `GET /api/cards/prints` search + `PUT /api/wants/:id/printing`; blocked while the want has an open offer being finished (previously: accepted offer) or when the target printing already exists on the list.
+- **Bulk skip**: `DELETE /api/members/:id/import-lines` ignores all unresolved import lines at once (owner only).
+- Member page has a **Deliveries** tab (`?tab=deliveries`): open offers where the member is offerer (awaiting exchange), grouped by buyer with subtotals, plus done-unpaid trades as collect-amount rows.
+- **The `accepted` offer state was removed** (owner: "open offer = deal"). Lifecycle is `open → done` (or `withdrawn`); either trade party marks done. Enum recreated in an isolated migration; re-offer partial index `WHERE status <> 'done'` preserved. `Want.acceptedOfferId` was never a real column (computed DTO field) — removed from the DTO.
+- **Any-version wants** (owner: card face shows "ANY VERSION", printings marked under the card): `Want.anyVersion` toggle (owner-only, revision-keyed) + `WantPrinting` list (max 12) managed by the owner, rendered as tile ribbon + `printingCaption` caption (`any · MH2, CLB +2`) and a read-only thumbnail grid in the sheet. The list is **informational only** — offers/trades/deliveries record no printing. Export omits the set code for any-version wants.

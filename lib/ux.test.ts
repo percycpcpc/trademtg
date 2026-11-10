@@ -5,6 +5,7 @@ import {
   aboveTarget,
   finishMismatch,
   groupWants,
+  printingCaption,
   reviewCounts,
   serialQueue,
   tileStatus,
@@ -32,12 +33,24 @@ const groupedWant = (
     typeLine: null,
     qty: 1,
     foilPref: "either",
+    anyVersion: false,
+    printings: [],
     targetPriceHkd: null,
     offers: [],
     coveredQty: 0,
     remainingQty: 1,
     ...overrides,
   }) as Want;
+
+describe("acceptable printing captions", () => {
+  const printings = (...setCodes: string[]) =>
+    setCodes.map((setCode) => ({ setCode })) as Want["printings"];
+  it("labels an empty list as any", () => expect(printingCaption([])).toBe("any"));
+  it("shows one set code", () => expect(printingCaption(printings("mh2"))).toBe("any · MH2"));
+  it("shows two set codes", () => expect(printingCaption(printings("mh2", "clb"))).toBe("any · MH2, CLB"));
+  it("truncates three or more codes with a count", () =>
+    expect(printingCaption(printings("mh2", "clb", "2xm", "lea"))).toBe("any · MH2, CLB +2"));
+});
 
 describe("offer entry", () => {
   it.each(["", " ", ".", "1.", "-1", "1e2", "0.001"])(

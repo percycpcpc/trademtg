@@ -136,6 +136,12 @@ export function tileStatus(want: Want) {
   const active = want.offers.filter((o) => o.status === "open");
   return `Need ${want.qty}${active.length ? ` · ${active.length} ${active.length === 1 ? "offer" : "offers"}` : ""}`;
 }
+export function printingCaption(printings: Pick<Want["printings"][number], "setCode">[]) {
+  const codes = [...new Set(printings.map((printing) => printing.setCode.toUpperCase()))];
+  if (!codes.length) return "any";
+  const visible = codes.slice(0, 2).join(", ");
+  return `any · ${visible}${codes.length > 2 ? ` +${codes.length - 2}` : ""}`;
+}
 export type ImportReport = {
   batchId: string;
   baseRevision: number;

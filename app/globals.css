@@ -630,6 +630,10 @@ footer {
 .tile {
   container-type: inline-size;
 }
+.tile-wrap { min-width: 0; }
+.tile-caption { display: flex; flex-direction: column; gap: 2px; padding: 7px 3px 0; }
+.tile-caption b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+.tile-caption small { color: var(--acid); font-size: 11px; }
 .tile img {
   position: absolute;
   inset: 0;
@@ -695,6 +699,34 @@ footer {
   font-size: 9px;
   letter-spacing: 0.08em;
 }
+.any-version-badge {
+  position: absolute;
+  top: 8px;
+  left: 0;
+  z-index: 2;
+  padding: 4px 7px;
+  border: 1px solid var(--acid);
+  border-left: 0;
+  border-radius: 0 4px 4px 0;
+  background: #08100ddd;
+  color: var(--acid);
+  font-size: 9px;
+  font-weight: 900;
+  letter-spacing: .09em;
+}
+.any-version-note { width: fit-content; padding: 5px 9px; border: 1px solid var(--acid); border-radius: 4px; background: #162116; color: var(--acid); font-size: 11px; font-weight: 800; letter-spacing: .08em; }
+.acceptable-printings { margin: 22px 0; padding-top: 18px; border-top: 1px solid var(--line); }
+.acceptable-printings h3 { margin-bottom: 4px; }
+.printing-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(92px, 1fr)); gap: 8px; margin: 12px 0; }
+.printing-grid article { position: relative; display: flex; flex-direction: column; align-items: center; gap: 5px; padding: 7px; background: #0d1012; border-radius: 6px; text-align: center; }
+.printing-grid article button { position: absolute; top: 2px; right: 2px; min-width: 28px; min-height: 28px; padding: 0; background: #090b0de8; }
+.printing-placeholder { display: flex; align-items: center; justify-content: center; padding: 3px; background: #20262a; font-size: 8px; }
+.printing-search { display: flex; flex-direction: column; gap: 5px; color: var(--muted); font-size: 12px; }
+.printing-search input { background: #090b0d; border: 1px solid #444; color: white; border-radius: 5px; padding: 10px; }
+.printing-results { display: grid; gap: 5px; max-height: 260px; margin-top: 8px; overflow: auto; }
+.printing-results button { display: grid; grid-template-columns: 48px 1fr; gap: 9px; align-items: center; text-align: left; }
+.printing-results button > span:last-child { display: flex; flex-direction: column; gap: 3px; }
+.printing-results small { color: var(--muted); }
 .segmented-field {
   min-width: 0;
   margin: 0;

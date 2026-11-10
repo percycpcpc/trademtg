@@ -259,7 +259,10 @@ export async function GET(
       const body =
         list.wants
           .map(
-            (w: any) => `${w.qty} ${w.cardName} (${w.setCode.toUpperCase()})`,
+            (w: any) =>
+              w.anyVersion
+                ? `${w.qty} ${w.cardName}`
+                : `${w.qty} ${w.cardName} (${w.setCode.toUpperCase()})`,
           )
           .join("\n") +
         `\n# ${list.unresolvedImports.length} unresolved line(s) excluded\n`;
@@ -521,6 +524,51 @@ export async function POST(
         { status: 201 },
       );
     }
+    if (p[0] === "wants" && p[2] === "printings" && p.length === 3) {
+      if (!validUuid(p[1]) || !validUuid(b.scryfallId))
+        throw new ApiError(422, "INVALID_PRINTING", "Choose a valid printing");
+      const want = await db.want.findUnique({ where: { id: p[1] } });
+      if (!want) throw new ApiError(404, "WANT_NOT_FOUND", "Want not found");
+      if (b.actorMemberId !== want.memberId)
+        throw new ApiError(403, "OWNER_REQUIRED", "Only the owner may manage acceptable printings");
+      const lookup = await fetch(
+        `https://api.scryfall.com/cards/${encodeURIComponent(b.scryfallId)}`,
+        {
+          headers: { Accept: "application/json", "User-Agent": "TradeMTG/1.0" },
+          cache: "no-store",
+        },
+      );
+      if (!lookup.ok)
+        throw new ApiError(
+          lookup.status === 404 ? 422 : 503,
+          lookup.status === 404 ? "CARD_NOT_FOUND" : "CARD_LOOKUP_UNAVAILABLE",
+          "Card could not be resolved",
+        );
+      const card = cardDto(await lookup.json());
+      return Response.json(
+        await memberTx(want.memberId, b, async (tx) => {
+          const existing = await tx.wantPrinting.findFirst({
+            where: { wantId: want.id, scryfallId: b.scryfallId },
+          });
+          if (existing) return {};
+          const count = await tx.wantPrinting.count({ where: { wantId: want.id } });
+          if (count >= 12)
+            throw new ApiError(422, "TOO_MANY_PRINTINGS", "Choose up to 12 acceptable printings");
+          await tx.wantPrinting.create({
+            data: {
+              wantId: want.id,
+              scryfallId: card.scryfallId,
+              cardName: card.cardName,
+              setCode: card.setCode,
+              collectorNo: card.collectorNo,
+              imageUrl: card.imageUrl,
+            },
+          });
+          return {};
+        }),
+        { status: 201 },
+      );
+    }
     if (p[0] === "wants" && p[2] === "offers") {
       const want = await db.want.findUnique({
         where: { id: p[1] },
@@ -644,6 +692,20 @@ export async function PUT(
   try {
     const p = (await c.params).path,
       b = await json(r);
+    if (p[0] === "wants" && p.length === 2) {
+      if (!validUuid(p[1]) || typeof b.anyVersion !== "boolean")
+        throw new ApiError(422, "INVALID_ANY_VERSION", "Any version must be true or false");
+      const want = await db.want.findUnique({ where: { id: p[1] } });
+      if (!want) throw new ApiError(404, "WANT_NOT_FOUND", "Want not found");
+      if (b.actorMemberId !== want.memberId)
+        throw new ApiError(403, "OWNER_REQUIRED", "Only the owner may change any version");
+      return Response.json(
+        await memberTx(want.memberId, b, async (tx) => {
+          await tx.want.update({ where: { id: want.id }, data: { anyVersion: b.anyVersion } });
+          return {};
+        }),
+      );
+    }
     if (p[0] === "wants" && p[2] === "printing" && p.length === 3) {
       if (!validUuid(p[1]) || !validUuid(b.scryfallId))
         throw new ApiError(422, "INVALID_PRINTING", "Choose a valid printing");
@@ -961,6 +1023,25 @@ export async function DELETE(
   try {
     const p = (await c.params).path,
       b = await json(r);
+    if (p[0] === "wants" && p[2] === "printings" && p.length === 4) {
+      if (!validUuid(p[1]) || !validUuid(p[3]))
+        throw new ApiError(400, "INVALID_ID", "Invalid printing ID");
+      const want = await db.want.findUnique({ where: { id: p[1] } });
+      if (!want) throw new ApiError(404, "WANT_NOT_FOUND", "Want not found");
+      if (b.actorMemberId !== want.memberId)
+        throw new ApiError(403, "OWNER_REQUIRED", "Only the owner may manage acceptable printings");
+      return Response.json(
+        await memberTx(want.memberId, b, async (tx) => {
+          const printing = await tx.wantPrinting.findFirst({
+            where: { id: p[3], wantId: want.id },
+          });
+          if (!printing)
+            throw new ApiError(404, "PRINTING_NOT_FOUND", "Acceptable printing not found");
+          await tx.wantPrinting.delete({ where: { id: printing.id } });
+          return { deletedId: printing.id };
+        }),
+      );
+    }
     if (p[0] === "members" && p[2] === "import-lines" && p.length === 3) {
       if (!validUuid(p[1])) throw new ApiError(400, "INVALID_ID", "Invalid member ID");
       if (b.actorMemberId !== p[1])
