@@ -47,7 +47,7 @@ export async function PUT(
               scryfallId: card.scryfallId,
             },
           },
-          create: { memberId: line.batch.memberId, ...card, qty },
+          create: { memberId: line.batch.memberId, ...card, qty, anyVersion: true },
           update: { ...card, qty },
         });
         await tx.importLine.update({

@@ -114,12 +114,6 @@ export function parseTargetPrice(x: unknown) {
     throw new ApiError(422, "INVALID_TARGET_PRICE", "Target price must be null or a decimal string from 0 to 99999999.99");
   return new Prisma.Decimal(x);
 }
-export function parsePaidBody(b: any) {
-  if (typeof b?.paid !== "boolean")
-    throw new ApiError(422, "INVALID_PAID", "Paid must be true or false");
-  return { paid: b.paid as boolean };
-}
-export const parseDoneBody = parsePaidBody;
 export function parseBorrowBody(b: any) {
   const parties = validateBorrowParties(b?.borrowerId, b?.lenderId);
   if (!validUuid(b?.scryfallId))
@@ -164,10 +158,8 @@ const include = {
 export async function snapshot(memberId: string, actor?: string, tx: any = db) {
   const m = await tx.member.findUnique({ where: { id: memberId }, include });
   if (!m) throw new ApiError(404, "MEMBER_NOT_FOUND", "Member not found");
-  let cents = 0n,
-    priced = 0,
-    unpriced = 0,
-    remaining = 0;
+  let remaining = 0,
+    openOffers = 0;
   const wants = m.wants.map((w: any) => {
     const offers = w.offers.map((o: any) => ({
       id: o.id,
@@ -178,7 +170,6 @@ export async function snapshot(memberId: string, actor?: string, tx: any = db) {
         color: o.offerer.color,
       },
       qty: o.qty,
-      unitPriceHkd: money(o.unitPriceHkd),
       finish: o.finish,
       status: o.status,
       editable:
@@ -187,25 +178,7 @@ export async function snapshot(memberId: string, actor?: string, tx: any = db) {
       createdAt: o.createdAt.toISOString(),
       updatedAt: o.updatedAt.toISOString(),
     }));
-    const opens = offers
-      .filter((o: any) => o.status === "open")
-      .sort(
-        (a: any, b: any) =>
-          Number(new Prisma.Decimal(a.unitPriceHkd).minus(b.unitPriceHkd)) ||
-          b.qty - a.qty ||
-          a.createdAt.localeCompare(b.createdAt) ||
-          a.id.localeCompare(b.id),
-      );
-    const chosen = opens[0];
-    if (chosen) {
-      cents += BigInt(
-        new Prisma.Decimal(chosen.unitPriceHkd)
-          .times(chosen.qty)
-          .times(100)
-          .toFixed(0),
-      );
-      priced++;
-    } else unpriced++;
+    openOffers += offers.filter((o: any) => o.status === "open").length;
     const covered = 0;
     remaining += Math.max(0, w.qty - covered);
     return {
@@ -252,10 +225,8 @@ export async function snapshot(memberId: string, actor?: string, tx: any = db) {
         })),
     ),
     total: {
-      amountHkd: `${cents / 100n}.${String(cents % 100n).padStart(2, "0")}`,
-      pricedCards: priced,
-      unpricedCards: unpriced,
       remainingCopies: remaining,
+      openOffers,
     },
   };
 }

@@ -1,7 +1,7 @@
 ﻿"use client";
 import { useEffect, useRef, useState } from "react";
 import type { Finish, FoilPref, List, Want } from "../lib/client-types";
-import { serialQueue, validPrice, validQuantity, validTargetPrice } from "../lib/ux";
+import { serialQueue, validQuantity, validTargetPrice } from "../lib/ux";
 export class ApiClientError extends Error {
   constructor(
     message: string,
@@ -37,7 +37,6 @@ export type Draft = {
   wantId: string;
   kind: "offer" | "quantity";
   qty: string;
-  price: string;
   finish: Finish;
   foilPref: FoilPref;
   targetPrice: string;
@@ -120,7 +119,6 @@ export function useList(initial: List) {
       wantId: want.id,
       kind: actor === list.member.id ? "quantity" : "offer",
       qty: String(actor === list.member.id ? want.qty : (mine?.qty ?? 1)),
-      price: mine?.unitPriceHkd ?? "",
       finish: mine?.finish ?? "non-foil",
       foilPref: want.foilPref,
       targetPrice: want.targetPriceHkd ?? "",
@@ -130,11 +128,11 @@ export function useList(initial: List) {
           ? "Saved"
           : mine
             ? "Offer saved"
-            : "Not saved — enter a price",
+            : "Not saved",
       version: retained?.version ?? 0,
     };
   }
-  function edit(draft: Draft, field: "qty" | "price" | "finish" | "foilPref" | "targetPrice", value: string) {
+  function edit(draft: Draft, field: "qty" | "finish" | "foilPref" | "targetPrice", value: string) {
     update(draftKey(draft.actor, draft.wantId), {
       ...draft,
       [field]: value,
@@ -151,8 +149,7 @@ export function useList(initial: List) {
     if (!want) return;
     if (
       !validQuantity(draft.qty, draft.kind === "offer" ? want.qty : 9999) ||
-      (draft.kind === "offer" && !validPrice(draft.price))
-      || (draft.kind === "quantity" && !validTargetPrice(draft.targetPrice))
+      (draft.kind === "quantity" && !validTargetPrice(draft.targetPrice))
     )
       return;
     if (
@@ -188,7 +185,6 @@ export function useList(initial: List) {
             data: {
               offererId: draft.actor,
               qty: Number(draft.qty),
-              unitPriceHkd: draft.price,
               finish: draft.finish,
             },
           });
@@ -244,7 +240,6 @@ export function useList(initial: List) {
       qty: apply
         ? draft.qty
         : String(draft.kind === "quantity" ? want.qty : (mine?.qty ?? 1)),
-      price: apply ? draft.price : (mine?.unitPriceHkd ?? ""),
       finish: apply ? draft.finish : (mine?.finish ?? "non-foil"),
       foilPref: apply ? draft.foilPref : want.foilPref,
       targetPrice: apply ? draft.targetPrice : (want.targetPriceHkd ?? ""),
@@ -252,7 +247,7 @@ export function useList(initial: List) {
       operation: undefined,
       operationVersion: undefined,
       dirty: apply,
-      status: apply ? "" : mine ? "Offer saved" : "Not saved — enter a price",
+      status: apply ? "" : mine ? "Offer saved" : "Not saved",
       version: draft.version + 1,
     });
   }

@@ -14,14 +14,11 @@ import {
   money,
   normalizeName,
   palette,
-  parseMoney,
   parseFinish,
   parseBorrowBody,
   parseBorrowStatus,
-  parseDoneBody,
   parseFoilPref,
   parseQty,
-  parsePaidBody,
   parseTargetPrice,
   serializable,
   snapshot,
@@ -32,7 +29,6 @@ import {
   decodeTradeCursor,
   encodeTradeCursor,
   paginationLimit,
-  tradePaid,
   tradeSnapshotQuantities,
 } from "../../../lib/trades-borrowed";
 import { parseImport } from "../../../lib/import-parser";
@@ -70,9 +66,6 @@ const tradeDto = (trade: any, memberId: string) => ({
   finish: trade.finish,
   qty: trade.qty,
   deductedQty: trade.deductedQty,
-  unitPriceHkd: money(trade.unitPriceHkd),
-  paid: tradePaid(trade.paidAt),
-  paidAt: trade.paidAt?.toISOString() ?? null,
   finishedAt: trade.finishedAt.toISOString(),
   counterparty: party(trade.buyerId === memberId ? trade.seller : trade.buyer),
 });
@@ -206,18 +199,11 @@ export async function GET(
         throw new ApiError(400, "INVALID_ID", "Invalid member ID");
       const member = await db.member.findUnique({ where: { id: p[1] }, select: { id: true } });
       if (!member) throw new ApiError(404, "MEMBER_NOT_FOUND", "Member not found");
-      const [offers, trades] = await Promise.all([
-        db.offer.findMany({
+      const offers = await db.offer.findMany({
           where: { offererId: p[1], status: "open" },
           include: { want: { include: { member: true } } },
           orderBy: [{ updatedAt: "desc" }],
-        }),
-        db.trade.findMany({
-          where: { sellerId: p[1], paidAt: null },
-          include: { buyer: true },
-          orderBy: [{ finishedAt: "desc" }],
-        }),
-      ]);
+        });
       return Response.json({
         deliveries: offers.map((offer) => ({
           offerId: offer.id,
@@ -228,17 +214,8 @@ export async function GET(
           setCode: offer.want.setCode,
           collectorNo: offer.want.collectorNo,
           qty: offer.qty,
-          unitPriceHkd: money(offer.unitPriceHkd),
           finish: offer.finish,
           updatedAt: offer.updatedAt.toISOString(),
-        })),
-        debts: trades.map((trade) => ({
-          tradeId: trade.id,
-          buyer: party(trade.buyer),
-          cardName: trade.cardName,
-          qty: trade.qty,
-          amountHkd: money(trade.unitPriceHkd.mul(trade.qty)),
-          finishedAt: trade.finishedAt.toISOString(),
         })),
       });
     }
@@ -596,7 +573,6 @@ export async function POST(
               "OFFER_QTY_EXCEEDS_WANT",
               "Offer exceeds wanted quantity",
             );
-          const price = parseMoney(b.unitPriceHkd);
           const finish = parseFinish(b.finish ?? "non-foil");
           const existing = await tx.offer.findFirst({
             where: {
@@ -610,27 +586,24 @@ export async function POST(
           const offer = existing
             ? await tx.offer.update({
                 where: { id: existing.id },
-                data: { qty, unitPriceHkd: price, finish, status: "open" },
+                data: { qty, finish, status: "open" },
               })
             : await tx.offer.create({
                 data: {
                   wantId: want.id,
                   offererId: b.offererId,
                   qty,
-                  unitPriceHkd: price,
                   finish,
                 },
               });
-          return {
-            offer: { ...offer, unitPriceHkd: money(offer.unitPriceHkd) },
-          };
+          return { offer };
         }),
         { status: 201 },
       );
     }
     if (p[0] === "offers" && p[2] === "done" && p.length === 3) {
       common(b);
-      const { paid } = parseDoneBody(b);
+      common(b);
       const foundOffer = await db.offer.findUnique({
         where: { id: p[1] },
         include: { want: true },
@@ -668,8 +641,6 @@ export async function POST(
               rarity: want.rarity,
               finish: offer.finish,
               ...quantities,
-              unitPriceHkd: offer.unitPriceHkd,
-              paidAt: paid ? new Date() : null,
             },
             include: { buyer: true, seller: true },
           });
@@ -857,6 +828,7 @@ export async function PUT(
                   memberId: p[1],
                   ...card,
                   qty: x.qty,
+                  anyVersion: true,
                   ...(x.foilPref === undefined ? {} : { foilPref: x.foilPref }),
                   ...(x.targetPriceHkd === undefined ? {} : { targetPriceHkd: parseTargetPrice(x.targetPriceHkd) }),
                 },
@@ -903,9 +875,9 @@ export async function PUT(
             );
           const o = await tx.offer.update({
             where: { id: offer.id },
-            data: { qty, unitPriceHkd: parseMoney(b.unitPriceHkd), finish: parseFinish(b.finish ?? "non-foil") },
+            data: { qty, finish: parseFinish(b.finish ?? "non-foil") },
           });
-          return { offer: { ...o, unitPriceHkd: money(o.unitPriceHkd) } };
+          return { offer: o };
         }),
       );
     }
@@ -921,41 +893,6 @@ export async function PATCH(
   try {
     const p = (await c.params).path,
       b = await json(r);
-    if (p[0] === "offers" && p[2] === "paid" && p.length === 3) {
-      common(b);
-      const { paid } = parsePaidBody(b);
-      const foundOffer = await db.offer.findUnique({
-        where: { id: p[1] },
-        include: { want: true },
-      });
-      const foundTrade = await db.trade.findFirst({
-        where: { OR: [{ offerId: p[1] }, { sourceOfferId: p[1] }] },
-      });
-      const buyerId = foundTrade?.buyerId ?? foundOffer?.want.memberId;
-      const sellerId = foundTrade?.sellerId ?? foundOffer?.offererId;
-      if (!buyerId || !sellerId)
-        throw new ApiError(404, "TRADE_NOT_FOUND", "Finished trade not found");
-      if (b.actorMemberId !== buyerId && b.actorMemberId !== sellerId)
-        throw new ApiError(403, "TRADE_PARTY_REQUIRED", "Only a trade party can update payment");
-      return Response.json(
-        await memberTx(buyerId, b, async (tx) => {
-          const offer = await tx.offer.findUnique({ where: { id: p[1] } });
-          if (offer && offer.status !== "done")
-            throw new ApiError(409, "OFFER_NOT_DONE", "Only a finished offer can update payment");
-          const trade = await tx.trade.findFirst({
-            where: { OR: [{ offerId: p[1] }, { sourceOfferId: p[1] }] },
-          });
-          if (!trade)
-            throw new ApiError(404, "TRADE_NOT_FOUND", "Finished trade not found");
-          const updated = await tx.trade.update({
-            where: { id: trade.id },
-            data: { paidAt: paid ? new Date() : null },
-            include: { buyer: true, seller: true },
-          });
-          return { trade: tradeDto(updated, buyerId) };
-        }),
-      );
-    }
     if (p[0] === "borrows" && p.length === 2) {
       common(b);
       const status = parseBorrowStatus(b.status);
@@ -1005,11 +942,10 @@ export async function PATCH(
           where: { id: offer.id },
           data: {
             qty,
-            unitPriceHkd: parseMoney(b.unitPriceHkd),
             finish: parseFinish(b.finish ?? "non-foil"),
           },
         });
-        return { offer: { ...updated, unitPriceHkd: money(updated.unitPriceHkd) } };
+        return { offer: updated };
       }),
     );
   } catch (e) {

@@ -4,14 +4,11 @@ import {
   decodeTradeCursor,
   encodeTradeCursor,
   paginationLimit,
-  tradePaid,
   tradeSnapshotQuantities,
 } from "./trades-borrowed";
 import {
   parseBorrowBody,
   parseBorrowStatus,
-  parseDoneBody,
-  parsePaidBody,
   validateBorrowParties,
 } from "./server";
 
@@ -20,10 +17,6 @@ const lenderId = "00000000-0000-4000-8000-000000000002";
 const scryfallId = "00000000-0000-4000-8000-000000000003";
 
 describe("trade and borrow validation", () => {
-  it.each([parseDoneBody, parsePaidBody])("requires a boolean paid value", (parse) => {
-    expect(parse({ paid: true })).toEqual({ paid: true });
-    expect(() => parse({ paid: "true" })).toThrow(/Paid/);
-  });
   it("parses a valid borrow", () => {
     expect(parseBorrowBody({ borrowerId, lenderId, scryfallId, qty: 2 })).toEqual({
       borrowerId,
@@ -68,26 +61,15 @@ describe("trade snapshots and history pagination", () => {
   });
 });
 
-describe("borrowed view debt composition", () => {
+describe("borrowed view composition", () => {
   const ledger = [
     { id: "borrowed", borrowerId, lenderId, status: "outstanding" as const },
     { id: "lent", borrowerId: lenderId, lenderId: borrowerId, status: "outstanding" as const },
     { id: "returned", borrowerId, lenderId, status: "returned" as const },
   ];
-  const trades = [
-    { id: "owes", buyerId: borrowerId, sellerId: lenderId, paidAt: null },
-    { id: "owed", buyerId: lenderId, sellerId: borrowerId, paidAt: null },
-    { id: "paid", buyerId: borrowerId, sellerId: lenderId, paidAt: "2026-10-26T00:00:00Z" },
-  ];
-  it("derives paid solely from paidAt", () => {
-    expect(tradePaid(null)).toBe(false);
-    expect(tradePaid(new Date())).toBe(true);
-  });
-  it("places borrower debts in Owes and lender receivables in Owed", () => {
-    const result = composeBorrowedSections(borrowerId, ledger, trades);
-    expect(result.owes.borrows.map((x) => x.id)).toEqual(["borrowed"]);
-    expect(result.owes.trades.map((x) => x.id)).toEqual(["owes"]);
-    expect(result.owed.borrows.map((x) => x.id)).toEqual(["lent"]);
-    expect(result.owed.trades.map((x) => x.id)).toEqual(["owed"]);
+  it("separates outstanding borrowed and lent cards", () => {
+    const result = composeBorrowedSections(borrowerId, ledger);
+    expect(result.borrowed.map((x) => x.id)).toEqual(["borrowed"]);
+    expect(result.lent.map((x) => x.id)).toEqual(["lent"]);
   });
 });

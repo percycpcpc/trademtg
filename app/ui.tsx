@@ -12,10 +12,7 @@ import {
 import { createPortal } from "react-dom";
 import type { Borrow, DeliveriesResponse, List, Member, Offer, Trade, Want } from "../lib/client-types";
 import { composeBorrowedSections } from "../lib/trades-borrowed";
-import { getReferencePrice } from "../lib/reference-price";
 import {
-  amount,
-  aboveTarget,
   composeDeliveries,
   finishMismatch,
   groupWants,
@@ -23,7 +20,6 @@ import {
   printingCaption,
   reviewCounts,
   tileStatus,
-  validPrice,
   validQuantity,
   validTargetPrice,
 } from "../lib/ux";
@@ -365,6 +361,31 @@ export function GalleryApp({ initial }: { initial: List }) {
     setActor(valid);
     void store.refresh(valid);
   }
+  async function toggleOffer(want: Want) {
+    if (!actor || actor === list.member.id) return;
+    const mine = want.offers.find(
+      (offer) => offer.offerer.id === actor && offer.status === "open",
+    );
+    try {
+      await store.mutate(
+        mine
+          ? { url: `/api/offers/${mine.id}`, method: "PATCH", data: { status: "withdrawn" } }
+          : {
+              url: `/api/wants/${want.id}/offers`, method: "POST",
+              data: {
+                offererId: actor,
+                qty: want.qty,
+                finish: want.foilPref === "foil" ? "foil" : "non-foil",
+              },
+            },
+        actor,
+      );
+      await store.refresh(actor);
+      setNotice(mine ? `Withdrew offer on ${want.cardName}` : `Offered ${want.qty}× ${want.cardName}`);
+    } catch (error) {
+      setNotice((error as Error).message);
+    }
+  }
   const exportLink = (
     <a
       className="button"
@@ -552,7 +573,15 @@ export function GalleryApp({ initial }: { initial: List }) {
                   <Tile
                     key={w.id}
                     want={w}
-                    onClick={() => setOpenWantId(w.id)}
+                    actionLabel={actor && actor !== list.member.id
+                      ? w.offers.some((offer) => offer.offerer.id === actor && offer.status === "open")
+                        ? `Withdraw offer on ${w.cardName}`
+                        : `Offer ${w.qty}× ${w.cardName}`
+                      : undefined}
+                    onClick={() => actor && actor !== list.member.id
+                      ? void toggleOffer(w)
+                      : setOpenWantId(w.id)}
+                    onDetails={() => setOpenWantId(w.id)}
                   />
                 ))}
               </div>
@@ -593,11 +622,8 @@ export function GalleryApp({ initial }: { initial: List }) {
         )}
       </main>
       <footer>
-        <b>Total for priced wants: HK${list.total.amountHkd}</b>
-        <span>
-          Based on offered quantities · {list.total.unpricedCards} cards without
-          offers · {list.total.remainingCopies} copies still needed
-        </span>
+        <b>{list.total.openOffers} open offers</b>
+        <span>{list.total.remainingCopies} copies still needed</span>
       </footer>
       </>
       ) : tab === "trades" ? (
@@ -727,61 +753,14 @@ function CardThumb({ imageUrl, name }: { imageUrl: string | null; name: string }
   );
 }
 
-function TradeStatus({ trade, memberId }: { trade: Trade; memberId: string }) {
-  const total = amount(trade.unitPriceHkd, trade.qty);
-  return trade.paid ? (
-    <span className="status-badge">Paid</span>
-  ) : (
-    <strong className="debt">{trade.buyerId === memberId ? "Owes" : "Owed"} HK${total}</strong>
-  );
-}
-
-function TradeRow({
-  trade,
-  member,
-  actor,
-  onPaid,
-}: {
-  trade: Trade;
-  member: Member;
-  actor: string | null;
-  onPaid: (trade: Trade, paid: boolean) => Promise<void>;
-}) {
-  const [pending, setPending] = useState(false), [error, setError] = useState("");
-  const canToggle = actor === member.id || actor === trade.counterparty.id;
-  async function toggle(paid: boolean, done: () => void) {
-    if (!actor || pending) return;
-    setPending(true);
-    setError("");
-    try {
-      await onPaid(trade, paid);
-      done();
-    } catch (e) {
-      setError(e instanceof ApiClientError && e.status === 409
-        ? "This trade changed elsewhere. The latest state has been loaded."
-        : (e as Error).message);
-    } finally { setPending(false); }
-  }
+function TradeRow({ trade }: { trade: Trade }) {
   return (
     <article className="history-row">
       <CardThumb imageUrl={trade.imageUrl} name={trade.cardName} />
       <div className="row-card"><b>{trade.cardName}</b><span>{trade.setCode.toUpperCase()} · #{trade.collectorNo} · {trade.finish}</span></div>
-      <span>{trade.qty} × HK${amount(trade.unitPriceHkd)} = <b>HK${amount(trade.unitPriceHkd, trade.qty)}</b></span>
+      <span>{trade.qty}× · {trade.finish}</span>
       <span>with <b style={{ color: trade.counterparty.color }}>{trade.counterparty.name}</b></span>
       <time dateTime={trade.finishedAt}>{new Date(trade.finishedAt).toLocaleDateString()}</time>
-      <div className="row-actions">
-        <TradeStatus trade={trade} memberId={member.id} />
-        {canToggle ? (
-          <ConfirmAction
-            label={trade.paid ? "Mark unpaid" : "Mark paid"}
-            question={trade.paid ? "Mark this trade unpaid again?" : "Confirm this trade has been paid?"}
-            keep="Cancel"
-          >
-            {(done) => <button disabled={pending} onClick={() => void toggle(!trade.paid, done)}>{pending ? "Saving…" : trade.paid ? "Mark unpaid" : "Mark paid"}</button>}
-          </ConfirmAction>
-        ) : <small>{actor ? "Only the buyer or seller can update payment." : "Choose the buyer or seller to update payment."}</small>}
-        {error && <p role="alert" className="error">{error}</p>}
-      </div>
     </article>
   );
 }
@@ -813,23 +792,11 @@ function TradesTab({ member, actor, cacheVersion, refreshList, invalidateBorrowe
       tabCache.set(member.id, { ...tabCache.get(member.id), trades: next }); setData(next);
     } catch (e) { setError((e as Error).message); } finally { setMore(false); }
   }
-  async function paid(trade: Trade, value: boolean) {
-    if (!actor) return;
-    try {
-      const expectedRevision = await fetchMemberRevision(trade.buyerId);
-      await api(`/api/offers/${trade.sourceOfferId}/paid`, { method: "PATCH", body: JSON.stringify({ paid: value, actorMemberId: actor, requestId: crypto.randomUUID(), expectedRevision }) });
-    } finally {
-      await refreshList();
-      tabCache.set(member.id, { ...tabCache.get(member.id), trades: undefined });
-      invalidateBorrowed();
-      await load(true);
-    }
-  }
   return <main className="list-main"><section className="list-hero"><p>FINISHED TRADES</p><h1>{member.name}’s trades</h1></section>
     {loading && <p role="status">Loading trades…</p>}
     {error && <p role="alert" className="error">{error} <button onClick={() => void load(true)}>Try again</button></p>}
     {!loading && !data?.rows.length && <div className="empty"><p>No finished trades yet — mark an open offer done from a wantlist.</p></div>}
-    <div className="history-list">{data?.rows.map((trade) => <TradeRow key={trade.id} trade={trade} member={member} actor={actor} onPaid={paid} />)}</div>
+    <div className="history-list">{data?.rows.map((trade) => <TradeRow key={trade.id} trade={trade} />)}</div>
     {data?.nextCursor && <button disabled={more} onClick={() => void loadMore()}>{more ? "Loading…" : "Load more"}</button>}
   </main>;
 }
@@ -874,7 +841,7 @@ function DeliveriesTab({ member, cacheVersion }: { member: Member; cacheVersion:
     finally { setLoading(false); }
   }
   useEffect(() => { void load(); }, [member.id, cacheVersion]);
-  const groups = composeDeliveries(data?.deliveries ?? [], data?.debts ?? []);
+  const groups = composeDeliveries(data?.deliveries ?? []);
   return <main className="list-main">
     <section className="list-hero"><p>交收清單</p><h1>Deliveries</h1></section>
     {loading && <p role="status">Loading deliveries…</p>}
@@ -884,18 +851,13 @@ function DeliveriesTab({ member, cacheVersion }: { member: Member; cacheVersion:
       <section className="borrow-section" key={group.buyer.id}>
         <div className="section-heading">
           <h2 style={{ color: group.buyer.color }}>{group.buyer.name}</h2>
-          <p>{group.items.reduce((sum, item) => sum + item.qty, 0)} cards · HK${group.subtotalHkd}{group.debtTotalHkd !== "0.00" && <> · collect HK${group.debtTotalHkd}</>}</p>
+          <p>{group.items.reduce((sum, item) => sum + item.qty, 0)} cards</p>
         </div>
         <div className="history-list">
           {group.items.map((item) => (
             <article className="history-row delivery-row" key={item.offerId}>
               <CardThumb imageUrl={item.imageUrl} name={item.cardName} />
-              <div className="row-card"><b>{item.cardName}</b><span>{item.setCode.toUpperCase()} · #{item.collectorNo} · {item.qty}× · HK${amount(item.unitPriceHkd)} ({item.finish})</span></div>
-            </article>
-          ))}
-          {group.debts.map((debt) => (
-            <article className="history-row debt-row" key={debt.tradeId}>
-              <div className="row-card"><b>{debt.cardName}</b><span>×{debt.qty} · HK${debt.amountHkd} · finished {new Date(debt.finishedAt).toLocaleDateString()} · unpaid</span></div>
+              <div className="row-card"><b>{item.cardName}</b><span>{item.setCode.toUpperCase()} · #{item.collectorNo} · {item.qty}× · {item.finish}</span></div>
             </article>
           ))}
         </div>
@@ -966,44 +928,33 @@ function AddBorrowDialog({ direction: initialDirection, member, members, actor, 
 }
 
 function BorrowedTab({ member, actor, members, cacheVersion, refreshList, invalidateTrades }: { member: Member; actor: string | null; members: Member[]; cacheVersion: number; refreshList: () => Promise<List | undefined>; invalidateTrades: () => void }) {
-  const [borrows, setBorrows] = useState<Borrow[] | undefined>(() => tabCache.get(member.id)?.borrows), [trades, setTrades] = useState<Trade[] | undefined>(() => tabCache.get(member.id)?.trades?.complete ? tabCache.get(member.id)?.trades?.rows : undefined);
-  const [loading, setLoading] = useState(!borrows || !trades), [error, setError] = useState(""), [add, setAdd] = useState<"borrowed" | "lent" | null>(null), [importing, setImporting] = useState(false);
+  const [borrows, setBorrows] = useState<Borrow[] | undefined>(() => tabCache.get(member.id)?.borrows);
+  const [loading, setLoading] = useState(!borrows), [error, setError] = useState(""), [add, setAdd] = useState<"borrowed" | "lent" | null>(null), [importing, setImporting] = useState(false);
   async function load(force = false) {
     const cached = tabCache.get(member.id);
     setLoading(true); setError("");
     try {
-      const [nextBorrows, nextTrades] = await Promise.all([
-        !force && cached?.borrows ? cached.borrows : api(`/api/members/${member.id}/borrows`).then((x) => x.borrows as Borrow[]),
-        !force && cached?.trades?.complete ? cached.trades.rows : fetchAllTrades(member.id),
-      ]);
-      tabCache.set(member.id, { borrows: nextBorrows, trades: { rows: nextTrades, nextCursor: null, complete: true } });
-      setBorrows(nextBorrows); setTrades(nextTrades);
+      const nextBorrows = !force && cached?.borrows ? cached.borrows : await api(`/api/members/${member.id}/borrows`).then((x) => x.borrows as Borrow[]);
+      tabCache.set(member.id, { ...cached, borrows: nextBorrows });
+      setBorrows(nextBorrows);
     } catch (e) { setError((e as Error).message); } finally { setLoading(false); }
   }
   useEffect(() => { void load(); }, [member.id, cacheVersion]);
   async function reloadBorrows() { tabCache.set(member.id, { ...tabCache.get(member.id), borrows: undefined }); await refreshList(); await load(true); }
-  async function paid(trade: Trade, value: boolean) {
-    if (!actor) return;
-    try {
-      const expectedRevision = await fetchMemberRevision(trade.buyerId);
-      await api(`/api/offers/${trade.sourceOfferId}/paid`, { method: "PATCH", body: JSON.stringify({ paid: value, actorMemberId: actor, requestId: crypto.randomUUID(), expectedRevision }) });
-    }
-    finally { invalidateTrades(); await refreshList(); await load(true); }
-  }
-  const sections = composeBorrowedSections(member.id, borrows ?? [], trades ?? []);
-  const section = (title: string, direction: "borrowed" | "lent", ledger: Borrow[], debts: Trade[]) => <section className="borrow-section"><div className="section-heading"><h2>{title}</h2><div>{direction === "borrowed" && <button onClick={() => setImporting(true)}>Import</button>} <button className="primary" onClick={() => setAdd(direction)}>Add borrow</button></div></div>
-    {!ledger.length && !debts.length && <p className="muted">{direction === "borrowed" ? "No borrowed cards or unpaid purchases." : "No lent cards or unpaid sales."}</p>}
-    <div className="history-list">{debts.map((trade) => <TradeRow key={`debt-${trade.id}`} trade={trade} member={member} actor={actor} onPaid={paid} />)}{ledger.map((row) => <BorrowRow key={row.id} row={row} member={member} actor={actor} onChange={reloadBorrows} />)}</div>
+  const sections = composeBorrowedSections(member.id, borrows ?? []);
+  const section = (title: string, direction: "borrowed" | "lent", ledger: Borrow[]) => <section className="borrow-section"><div className="section-heading"><h2>{title}</h2><div>{direction === "borrowed" && <button onClick={() => setImporting(true)}>Import</button>} <button className="primary" onClick={() => setAdd(direction)}>Add borrow</button></div></div>
+    {!ledger.length && <p className="muted">{direction === "borrowed" ? "No borrowed cards." : "No lent cards."}</p>}
+    <div className="history-list">{ledger.map((row) => <BorrowRow key={row.id} row={row} member={member} actor={actor} onChange={reloadBorrows} />)}</div>
   </section>;
-  return <main className="list-main"><section className="list-hero"><p>BORROWED LEDGER</p><h1>{member.name}’s cards and debts</h1></section>
+  return <main className="list-main"><section className="list-hero"><p>BORROWED LEDGER</p><h1>{member.name}’s borrowed cards</h1></section>
     {loading && <p role="status">Loading borrowed cards…</p>}{error && <p role="alert" className="error">{error} <button onClick={() => void load(true)}>Try again</button></p>}
-    {!loading && <>{section("Borrowed by me", "borrowed", sections.owes.borrows, sections.owes.trades)}{section("Lent out", "lent", sections.owed.borrows, sections.owed.trades)}</>}
+    {!loading && <>{section("Borrowed by me", "borrowed", sections.borrowed)}{section("Lent out", "lent", sections.lent)}</>}
     {add && <AddBorrowDialog direction={add} member={member} members={members} actor={actor} close={() => setAdd(null)} saved={reloadBorrows} />}
     {importing && <ImportBorrowsDialog member={member} members={members} actor={actor} close={() => setImporting(false)} saved={reloadBorrows} />}
   </main>;
 }
 
-function Tile({ want, onClick }: { want: Want; onClick: () => void }) {
+function Tile({ want, onClick, onDetails, actionLabel }: { want: Want; onClick: () => void; onDetails: () => void; actionLabel?: string }) {
   const active = want.offers
       .filter((o) => o.status === "open")
       .sort(
@@ -1018,7 +969,7 @@ function Tile({ want, onClick }: { want: Want; onClick: () => void }) {
     <button
       className="tile"
       onClick={onClick}
-      aria-label={`${want.cardName}, ${want.rarity}, ${status}${active.length ? `, offers from ${active.map((o) => o.offerer.name).join(", ")}` : ""}`}
+      aria-label={actionLabel ?? `${want.cardName}, ${want.rarity}, ${status}${active.length ? `, offers from ${active.map((o) => o.offerer.name).join(", ")}` : ""}`}
     >
       {(!loaded || bad || !want.imageUrl) && (
         <div className="placeholder">
@@ -1062,6 +1013,7 @@ function Tile({ want, onClick }: { want: Want; onClick: () => void }) {
       )}
       <div className="need">{status}</div>
     </button>
+    <button className="tile-details" onClick={onDetails} aria-label={`Details for ${want.cardName}`}>Details</button>
     <div className="tile-caption"><b>{want.cardName}</b>{want.anyVersion && <small>{printingCaption(want.printings)}</small>}</div>
   </article>;
 }
@@ -1191,10 +1143,7 @@ function DraftStatus({
         <p role="alert">Enter a target from HK$0 to HK$99999999.99, or leave it blank.</p>
       ) : (
         <span role={draft.status.startsWith("Couldn") ? "alert" : "status"}>
-          {draft.status ||
-              (draft.kind === "offer" && !validPrice(draft.price)
-                ? "Not saved — enter a price"
-                : "Saving…")}
+          {draft.status || "Saving…"}
         </span>
       )}
       {draft.conflict && (
@@ -1204,10 +1153,10 @@ function DraftStatus({
             {draft.kind === "quantity"
               ? `${want.qty} copies`
               : mine
-                ? `${mine.qty} copies · HK$${mine.unitPriceHkd} each`
+                ? `${mine.qty} copies · ${mine.finish}`
                 : "No offer"}
             . Your draft: {draft.qty} copies
-            {draft.kind === "offer" && ` · HK$${draft.price} each`}.
+            {draft.kind === "offer" && ` · ${draft.finish}`}.
           </p>
           <button onClick={() => store.resolve(draft, true)}>
             Apply my changes
@@ -1238,27 +1187,6 @@ function OfferEditor({
     mine = want.offers.find(
       (o) => o.offerer.id === actor && o.status !== "withdrawn" && o.status !== "done",
     );
-  const [usd, setUsd] = useState<string | null | undefined>(),
-    [failed, setFailed] = useState(false),
-    [attempt, setAttempt] = useState(0);
-  useEffect(() => {
-    let active = true;
-    setFailed(false);
-    setUsd(undefined);
-    getReferencePrice(want.scryfallId)
-      .then((x) => {
-        if (active) setUsd(x.value);
-      })
-      .catch(() => {
-        if (active) {
-          setFailed(true);
-          setUsd(null);
-        }
-      });
-    return () => {
-      active = false;
-    };
-  }, [want.scryfallId, attempt]);
   return (
     <section>
       <h3>Your offer to {store.list.member.name}</h3>
@@ -1271,31 +1199,6 @@ function OfferEditor({
             onChange={(e) => store.edit(draft, "qty", e.target.value)}
           />
           <small>Up to {want.qty}</small>
-        </label>
-        <label>
-          Your price per copy (HKD)
-          <span className="money-input">
-            <span>HK$</span>
-            <input
-              inputMode="decimal"
-              value={draft.price}
-              placeholder="Enter price"
-              onChange={(e) => store.edit(draft, "price", e.target.value)}
-            />
-          </span>
-          <span className="reference-price">
-            {usd === undefined
-              ? "Reference loading…"
-              : usd === null
-                ? "USD reference unavailable"
-                : `Reference only: ~US$${usd} (TCG mkt)`}
-          </span>
-          {failed && (
-            <button onClick={() => setAttempt((x) => x + 1)}>
-              Retry reference
-            </button>
-          )}
-          <small>Enter your own HKD price. Enter 0 for a free offer.</small>
         </label>
         <fieldset className="segmented-field">
           <legend>Finish</legend>
@@ -1314,19 +1217,7 @@ function OfferEditor({
           </div>
         </fieldset>
       </div>
-      {want.targetPriceHkd !== null && (
-        <p className="target-guidance">Buyer expects ≤ HK${amount(want.targetPriceHkd)}</p>
-      )}
-      {validPrice(draft.price) && aboveTarget(draft.price, want.targetPriceHkd) && (
-        <p className="price-warning">⚠ Above buyer target — you can still save this offer.</p>
-      )}
       <p>Your offer saves automatically.</p>
-      {validQuantity(draft.qty, want.qty) && validPrice(draft.price) && (
-        <p>
-          {draft.qty} × HK${amount(draft.price)} = HK$
-          {amount(draft.price, Number(draft.qty))}
-        </p>
-      )}
       <DraftStatus draft={draft} store={store} want={want} />
       {mine && (
         <ConfirmAction
@@ -1345,7 +1236,7 @@ function OfferEditor({
                 data: { status: "withdrawn" },
               })}
               onSuccess={() => {
-                store.resolve({ ...draft, qty: "1", price: "" }, false);
+                store.resolve({ ...draft, qty: "1" }, false);
                 done();
               }}
             />
@@ -1357,8 +1248,6 @@ function OfferEditor({
 }
 function OfferFlags({ want, offer }: { want: Want; offer: Offer }) {
   const mismatch = finishMismatch(want.foilPref, offer.finish);
-  const expensive =
-    offer.status === "open" && aboveTarget(offer.unitPriceHkd, want.targetPriceHkd);
   return (
     <small className="offer-flags">
       <span className="finish-badge">{offer.finish === "foil" ? "F" : "N"}</span>
@@ -1368,17 +1257,16 @@ function OfferFlags({ want, offer }: { want: Want; offer: Offer }) {
           ⚠
         </span>
       )}
-      {expensive && <span className="price-warning">⚠ Above buyer target</span>}
     </small>
   );
 }
 function MarkDoneDialog({ want, offer, store, actor, close, complete }: { want: Want; offer: Offer; store: ListStore; actor: string; close: () => void; complete: (wantId: string) => void }) {
-  const [paid, setPaid] = useState<boolean | null>(null), [pending, setPending] = useState(false), [error, setError] = useState(""), [status, setStatus] = useState("");
+  const [pending, setPending] = useState(false), [error, setError] = useState(""), [status, setStatus] = useState("");
   async function submit() {
-    if (paid === null || pending) return;
+    if (pending) return;
     setPending(true); setError(""); setStatus("Saving…");
     try {
-      await store.mutate({ url: `/api/offers/${offer.id}/done`, method: "POST", data: { paid } }, actor);
+      await store.mutate({ url: `/api/offers/${offer.id}/done`, method: "POST", data: {} }, actor);
       store.resetWantDrafts(want.id);
       await store.refresh(actor);
       setStatus("Saved"); complete(want.id); close();
@@ -1388,14 +1276,10 @@ function MarkDoneDialog({ want, offer, store, actor, close, complete }: { want: 
     } finally { setPending(false); }
   }
   return <Dialog title="Mark trade done" subtitle={`${want.cardName} · ${offer.qty} ${offer.qty === 1 ? "copy" : "copies"}`} close={close} status={status}>
-    <div className="trade-summary"><p><b>Counterparty</b> {actor === offer.offerer.id ? store.list.member.name : offer.offerer.name}</p><p><b>Unit price</b> HK${amount(offer.unitPriceHkd)}</p><p><b>Total</b> HK${amount(offer.unitPriceHkd, offer.qty)}</p></div>
-    <fieldset className="payment-choice"><legend>Payment</legend>
-      <label><input type="radio" name="paid" checked={paid === true} onChange={() => setPaid(true)} /> Paid now</label>
-      <label><input type="radio" name="paid" checked={paid === false} onChange={() => setPaid(false)} /> Pay later</label>
-    </fieldset>
+    <div className="trade-summary"><p><b>Counterparty</b> {actor === offer.offerer.id ? store.list.member.name : offer.offerer.name}</p><p><b>Quantity</b> {offer.qty}</p><p><b>Finish</b> {offer.finish}</p></div>
     <p className="muted">Finishing deducts up to {offer.qty} copies from the wantlist. This cannot be undone.</p>
     {error && <p role="alert" className="error">{error}</p>}
-    <button className="primary" disabled={paid === null || pending} onClick={() => void submit()}>{pending ? "Saving…" : "Mark trade done"}</button>
+    <button className="primary" disabled={pending} onClick={() => void submit()}>{pending ? "Saving…" : "Mark trade done"}</button>
   </Dialog>;
 }
 type CardPrint = Card & { imageUrl: string | null; rarity: string; releasedAt: string; finishes: string[] };
@@ -1549,7 +1433,7 @@ function Sheet({
           <b>
             Pending exchange · <span style={{ color: `color-mix(in srgb, ${pendingExchange.offerer.color} 55%, white)` }}>
               {owner ? pendingExchange.offerer.name : store.list.member.name}
-            </span> · {pendingExchange.qty} × HK${amount(pendingExchange.unitPriceHkd)} · {pendingExchange.finish}
+            </span> · {pendingExchange.qty}× · {pendingExchange.finish}
           </b>
           <button className="primary" onClick={() => setFinishing(pendingExchange)}>Mark done</button>
         </section>
@@ -1626,10 +1510,6 @@ function Sheet({
             <div className="offer-list" key={o.id}>
               <article>
                 <b>You ? {o.qty} copies</b>
-                <span>
-                  HK${amount(o.unitPriceHkd)} each ? HK$
-                  {amount(o.unitPriceHkd, o.qty)} total
-                </span>
                 <OfferFlags want={want} offer={o} />
                 <em>Open</em>
               </article>
@@ -1657,10 +1537,6 @@ function Sheet({
                 {o.offerer.id === actor && !owner ? "You" : o.offerer.name} ·{" "}
                 {o.qty} copies
               </b>
-              <span>
-                HK${amount(o.unitPriceHkd)} each · HK$
-                {amount(o.unitPriceHkd, o.qty)} total
-              </span>
               <OfferFlags want={want} offer={o} />
               <em>Open</em>
               {actor && (owner || actor === o.offerer.id) && (

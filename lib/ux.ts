@@ -1,4 +1,4 @@
-import type { DebtItem, DeliveryItem, Finish, FoilPref, Party, Want } from "./client-types";
+import type { DeliveryItem, Finish, FoilPref, Party, Want } from "./client-types";
 
 const colorSections = [
   "White",
@@ -79,58 +79,21 @@ export function groupWants(
 export function validQuantity(value: string, max = 9999) {
   return /^\d+$/.test(value) && Number(value) >= 1 && Number(value) <= max;
 }
-export function validPrice(value: string) {
-  return /^\d+(?:\.\d{1,2})?$/.test(value) && value.split(".")[0].length <= 10;
-}
 export function validTargetPrice(value: string) {
   return value === "" || (/^\d+(?:\.\d{1,2})?$/.test(value) && value.split(".")[0].length <= 8);
 }
 export function finishMismatch(pref: FoilPref, finish: Finish) {
   return pref !== "either" && pref !== finish;
 }
-export function aboveTarget(unitPrice: string, target: string | null) {
-  if (target === null) return false;
-  const cents = (value: string) => {
-    const [whole, fraction = ""] = value.split(".");
-    return BigInt(whole) * 100n + BigInt(fraction.padEnd(2, "0"));
-  };
-  return cents(unitPrice) > cents(target);
-}
-export function amount(value: string, qty = 1) {
-  const [whole, fraction = ""] = value.split(".");
-  const cents =
-    (BigInt(whole) * 100n + BigInt(fraction.padEnd(2, "0"))) * BigInt(qty);
-  return `${cents / 100n}.${String(cents % 100n).padStart(2, "0")}`;
-}
-export function composeDeliveries(deliveries: DeliveryItem[], debts: DebtItem[]) {
-  const groups = new Map<string, { buyer: Party; items: DeliveryItem[]; debts: DebtItem[] }>();
+export function composeDeliveries(deliveries: DeliveryItem[]) {
+  const groups = new Map<string, { buyer: Party; items: DeliveryItem[] }>();
   for (const row of deliveries) {
-    const group = groups.get(row.buyer.id) ?? { buyer: row.buyer, items: [], debts: [] };
+    const group = groups.get(row.buyer.id) ?? { buyer: row.buyer, items: [] };
     group.items.push(row);
     groups.set(row.buyer.id, group);
   }
-  for (const row of debts) {
-    const group = groups.get(row.buyer.id) ?? { buyer: row.buyer, items: [], debts: [] };
-    group.debts.push(row);
-    groups.set(row.buyer.id, group);
-  }
-  const total = (values: string[]) => values.reduce(addMoney, "0.00");
   return [...groups.values()]
-    .map((group) => ({
-      ...group,
-      subtotalHkd: total(group.items.map((item) => amount(item.unitPriceHkd, item.qty))),
-      debtTotalHkd: total(group.debts.map((debt) => debt.amountHkd)),
-    }))
     .sort((a, b) => a.buyer.name.localeCompare(b.buyer.name));
-}
-
-function addMoney(left: string, right: string) {
-  const toCents = (value: string) => {
-    const [whole, fraction = ""] = value.split(".");
-    return BigInt(whole) * 100n + BigInt(fraction.padEnd(2, "0"));
-  };
-  const cents = toCents(left) + toCents(right);
-  return `${cents / 100n}.${String(cents % 100n).padStart(2, "0")}`;
 }
 export function tileStatus(want: Want) {
   const active = want.offers.filter((o) => o.status === "open");

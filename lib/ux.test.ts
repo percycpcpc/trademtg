@@ -1,8 +1,6 @@
 ﻿import { describe, expect, it } from "vitest";
 import {
-  amount,
   composeDeliveries,
-  aboveTarget,
   finishMismatch,
   groupWants,
   printingCaption,
@@ -10,12 +8,11 @@ import {
   serialQueue,
   tileStatus,
   typeGroup,
-  validPrice,
   validQuantity,
   type ImportReport,
 } from "./ux";
 import type { Want } from "./client-types";
-import type { DebtItem, DeliveryItem, Party } from "./client-types";
+import type { DeliveryItem, Party } from "./client-types";
 
 const groupedWant = (
   cardName: string,
@@ -53,16 +50,6 @@ describe("acceptable printing captions", () => {
 });
 
 describe("offer entry", () => {
-  it.each(["", " ", ".", "1.", "-1", "1e2", "0.001"])(
-    "keeps partial/invalid price %j unsaved",
-    (value) => expect(validPrice(value)).toBe(false),
-  );
-  it("accepts deliberate free offers and formats integer cents without float rounding", () => {
-    expect(validPrice("0")).toBe(true);
-    expect(amount("0")).toBe("0.00");
-    expect(amount("0.29", 3)).toBe("0.87");
-    expect(amount("9999999999.99", 9999)).toBe("99989999999900.01");
-  });
   it("rejects blank, fractional, zero and excessive quantities", () => {
     for (const value of ["", "0", "1.5", "5"])
       expect(validQuantity(value, 4)).toBe(false);
@@ -72,33 +59,17 @@ describe("offer entry", () => {
 describe("deliveries composition", () => {
   const alice: Party = { id: "a", name: "Alice", color: "red" };
   const bob: Party = { id: "b", name: "Bob", color: "blue" };
-  const delivery = (buyer: Party, price: string, qty: number, offerId: string): DeliveryItem => ({
+  const delivery = (buyer: Party, qty: number, offerId: string): DeliveryItem => ({
     offerId, wantId: `w-${offerId}`, buyer, cardName: "Lightning Bolt", imageUrl: null,
-    setCode: "lea", collectorNo: "161", qty, unitPriceHkd: price, finish: "non-foil",
+    setCode: "lea", collectorNo: "161", qty, finish: "non-foil",
     updatedAt: "2026-11-10T00:00:00.000Z",
-  });
-  const debt = (buyer: Party, amountHkd: string, tradeId: string): DebtItem => ({
-    tradeId, buyer, cardName: "Island", qty: 1, amountHkd,
-    finishedAt: "2026-11-09T00:00:00.000Z",
   });
   it("groups multiple buyers, preserves item order, and sorts by buyer name", () => {
     const result = composeDeliveries([
-      delivery(bob, "2.50", 2, "new"), delivery(bob, "1.00", 1, "old"), delivery(alice, "3", 1, "alice"),
-    ], []);
+      delivery(bob, 2, "new"), delivery(bob, 1, "old"), delivery(alice, 1, "alice"),
+    ]);
     expect(result.map((group) => group.buyer.name)).toEqual(["Alice", "Bob"]);
     expect(result[1].items.map((item) => item.offerId)).toEqual(["new", "old"]);
-  });
-  it("includes a buyer present only in debts", () => {
-    const result = composeDeliveries([], [debt(bob, "4.25", "t1")]);
-    expect(result[0]).toMatchObject({ buyer: bob, items: [], debtTotalHkd: "4.25" });
-  });
-  it("uses exact decimal-string math for delivery subtotals and debts", () => {
-    const [group] = composeDeliveries(
-      [delivery(alice, "0.29", 3, "a"), delivery(alice, "10.01", 2, "b")],
-      [debt(alice, "0.10", "t1"), debt(alice, "12.34", "t2")],
-    );
-    expect(group.subtotalHkd).toBe("20.89");
-    expect(group.debtTotalHkd).toBe("12.44");
   });
 });
 describe("finish and target guidance", () => {
@@ -111,14 +82,6 @@ describe("finish and target guidance", () => {
     ["either", "non-foil", false],
   ] as const)("matches %s preference to %s finish", (pref, finish, expected) => {
     expect(finishMismatch(pref, finish)).toBe(expected);
-  });
-  it.each([
-    ["10.01", "10.00", true],
-    ["10", "10.00", false],
-    ["9.99", "10", false],
-    ["999", null, false],
-  ] as const)("compares %s against %s", (price, target, expected) => {
-    expect(aboveTarget(price, target)).toBe(expected);
   });
 });
 describe("import review presentation", () => {
