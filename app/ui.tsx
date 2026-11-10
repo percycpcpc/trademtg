@@ -1522,7 +1522,7 @@ function Sheet({
         </section>
       )}
       <AcceptablePrintings want={want} store={store} actor={actor} editable={owner} setNotice={setNotice} />
-      <AllPrintings cardName={want.cardName} />
+      {want.printings.length === 0 && <AllPrintings cardName={want.cardName} />}
       {actor && !owner && (
         <OfferEditor want={want} store={store} actor={actor} />
       )}
