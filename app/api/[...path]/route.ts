@@ -208,7 +208,7 @@ export async function GET(
       if (!member) throw new ApiError(404, "MEMBER_NOT_FOUND", "Member not found");
       const [offers, trades] = await Promise.all([
         db.offer.findMany({
-          where: { offererId: p[1], status: "accepted" },
+          where: { offererId: p[1], status: "open" },
           include: { want: { include: { member: true } } },
           orderBy: [{ updatedAt: "desc" }],
         }),
@@ -541,12 +541,6 @@ export async function POST(
         );
       return Response.json(
         await memberTx(want.memberId, b, async (tx) => {
-          if (want.offers.some((o) => o.status === "accepted"))
-            throw new ApiError(
-              409,
-              "WANT_HAS_ACCEPTED_OFFER",
-              "Offers are frozen",
-            );
           const qty = parseQty(b.qty);
           if (qty > want.qty)
             throw new ApiError(
@@ -604,8 +598,8 @@ export async function POST(
         await memberTx(buyerId, b, async (tx) => {
           const offer = await tx.offer.findUnique({ where: { id: p[1] } });
           if (!offer) throw new ApiError(409, "OFFER_ALREADY_FINISHED", "Offer was already finished");
-          if (offer.status !== "accepted")
-            throw new ApiError(409, "OFFER_NOT_ACCEPTED", "Only an accepted offer can be finished");
+          if (offer.status !== "open")
+            throw new ApiError(409, "OFFER_NOT_OPEN", "Only an open offer can be finished");
           const want = await tx.want.findUnique({ where: { id: offer.wantId } });
           if (!want) throw new ApiError(409, "WANT_NOT_FOUND", "Want no longer exists");
           if (offer.offererId === want.memberId)
@@ -638,47 +632,6 @@ export async function POST(
         }),
       );
     }
-    if (p[0] === "offers" && p[2] === "accept") {
-      const offer = await db.offer.findUnique({
-        where: { id: p[1] },
-        include: { want: true },
-      });
-      if (!offer) throw new ApiError(404, "OFFER_NOT_FOUND", "Offer not found");
-      if (b.actorMemberId !== offer.want.memberId)
-        throw new ApiError(403, "OWNER_REQUIRED", "Only owner can accept");
-      return Response.json(
-        await memberTx(offer.want.memberId, b, async (tx) => {
-          const offers = await tx.offer.findMany({
-              where: { wantId: offer.wantId },
-            }),
-            current = offers.find((o: any) => o.status === "accepted");
-          if (offer.status === "withdrawn")
-            throw new ApiError(409, "OFFER_WITHDRAWN", "Offer was withdrawn");
-          if (offer.status === "done")
-            throw new ApiError(409, "OFFER_ALREADY_FINISHED", "Offer was already finished");
-          if (
-            (current?.id ?? null) !== (b.expectedAcceptedOfferId ?? null) &&
-            current?.id !== offer.id
-          )
-            throw new ApiError(
-              409,
-              "ACCEPTANCE_CHANGED",
-              "Accepted offer changed",
-              { acceptedOfferId: current?.id ?? null },
-            );
-          if (current && current.id !== offer.id)
-            await tx.offer.update({
-              where: { id: current.id },
-              data: { status: "open" },
-            });
-          await tx.offer.update({
-            where: { id: offer.id },
-            data: { status: "accepted" },
-          });
-          return {};
-        }),
-      );
-    }
     throw new ApiError(404, "NOT_FOUND", "Route not found");
   } catch (e) {
     return fail(e);
@@ -701,8 +654,6 @@ export async function PUT(
       if (!want) throw new ApiError(404, "WANT_NOT_FOUND", "Want not found");
       if (b.actorMemberId !== want.memberId)
         throw new ApiError(403, "OWNER_REQUIRED", "Only the owner may change the printing");
-      if (want.offers.some((offer) => offer.status === "accepted"))
-        throw new ApiError(409, "PRINTING_LOCKED", "Clear the accepted offer before changing the printing");
       const lookup = await fetch(`https://api.scryfall.com/cards/${encodeURIComponent(b.scryfallId)}`, {
         headers: { Accept: "application/json", "User-Agent": "TradeMTG/1.0" },
         cache: "no-store",
@@ -721,8 +672,6 @@ export async function PUT(
             include: { offers: true },
           });
           if (!current) throw new ApiError(404, "WANT_NOT_FOUND", "Want not found");
-          if (current.offers.some((offer: any) => offer.status === "accepted"))
-            throw new ApiError(409, "PRINTING_LOCKED", "Clear the accepted offer before changing the printing");
           const duplicate = await tx.want.findFirst({
             where: { memberId: current.memberId, scryfallId: b.scryfallId, id: { not: current.id } },
             select: { id: true },
@@ -825,7 +774,7 @@ export async function PUT(
               const active = await tx.offer.findMany({
                 where: {
                   want: { memberId: p[1], scryfallId: x.scryfallId },
-                  status: { in: ["open", "accepted"] },
+                  status: "open",
                   qty: { gt: x.qty },
                 },
               });
@@ -877,17 +826,11 @@ export async function PUT(
         throw new ApiError(403, "OFFERER_REQUIRED", "Only offerer may edit");
       return Response.json(
         await memberTx(offer.want.memberId, b, async (tx) => {
-          if (offer.status === "accepted" || offer.status === "done")
+          if (offer.status !== "open")
             throw new ApiError(
               409,
-              "ACCEPTED_OFFER_IMMUTABLE",
-              "Accepted or finished offer is immutable",
-            );
-          if (offer.want.offers.some((o) => o.status === "accepted"))
-            throw new ApiError(
-              409,
-              "WANT_HAS_ACCEPTED_OFFER",
-              "Offers are frozen",
+              "OFFER_NOT_OPEN",
+              "Only an open offer may be edited",
             );
           const qty = parseQty(b.qty);
           if (qty > offer.want.qty)
@@ -978,17 +921,11 @@ export async function PATCH(
       throw new ApiError(403, "OFFERER_REQUIRED", "Only offerer may edit");
     return Response.json(
       await memberTx(offer.want.memberId, b, async (tx) => {
-        if (offer.status === "accepted" || offer.status === "done")
+        if (offer.status !== "open")
           throw new ApiError(
             409,
-            "ACCEPTED_OFFER_IMMUTABLE",
-            "Accepted or finished offer is immutable",
-          );
-        if (offer.want.offers.some((o) => o.status === "accepted"))
-          throw new ApiError(
-            409,
-            "WANT_HAS_ACCEPTED_OFFER",
-            "Offers are frozen",
+            "OFFER_NOT_OPEN",
+            "Only an open offer may be changed",
           );
         if (b.status === "withdrawn")
           return {

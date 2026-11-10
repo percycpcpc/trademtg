@@ -180,12 +180,10 @@ export async function snapshot(memberId: string, actor?: string, tx: any = db) {
       status: o.status,
       editable:
         o.offererId === actor &&
-        o.status === "open" &&
-        !w.offers.some((a: any) => a.status === "accepted"),
+        o.status === "open",
       createdAt: o.createdAt.toISOString(),
       updatedAt: o.updatedAt.toISOString(),
     }));
-    const accepted = offers.find((o: any) => o.status === "accepted");
     const opens = offers
       .filter((o: any) => o.status === "open")
       .sort(
@@ -195,7 +193,7 @@ export async function snapshot(memberId: string, actor?: string, tx: any = db) {
           a.createdAt.localeCompare(b.createdAt) ||
           a.id.localeCompare(b.id),
       );
-    const chosen = accepted ?? opens[0];
+    const chosen = opens[0];
     if (chosen) {
       cents += BigInt(
         new Prisma.Decimal(chosen.unitPriceHkd)
@@ -205,7 +203,7 @@ export async function snapshot(memberId: string, actor?: string, tx: any = db) {
       );
       priced++;
     } else unpriced++;
-    const covered = accepted?.qty ?? 0;
+    const covered = 0;
     remaining += Math.max(0, w.qty - covered);
     return {
       id: w.id,
@@ -221,7 +219,6 @@ export async function snapshot(memberId: string, actor?: string, tx: any = db) {
       foilPref: w.foilPref,
       targetPriceHkd: w.targetPriceHkd === null ? null : money(w.targetPriceHkd),
       offers,
-      acceptedOfferId: accepted?.id ?? null,
       coveredQty: covered,
       remainingQty: Math.max(0, w.qty - covered),
     };

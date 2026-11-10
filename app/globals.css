@@ -220,9 +220,6 @@ nav {
   outline: 3px solid var(--acid);
   outline-offset: 3px;
 }
-.tile.accepted img {
-  filter: saturate(0.8);
-}
 .gem {
   position: absolute;
   top: 7px;
@@ -685,22 +682,6 @@ footer {
 .stickers span.long {
   font-size: clamp(20px, 11cqw, 32px);
 }
-.stickers span.dim {
-  font-size: 20px;
-  opacity: 0.55;
-  -webkit-text-stroke-width: 5px;
-}
-.accepted-label {
-  position: absolute;
-  left: 8px;
-  top: 8px;
-  background: #111;
-  color: var(--acid);
-  border: 1px solid var(--acid);
-  padding: 2px 5px;
-  border-radius: 4px;
-  font-size: 11px;
-}
 .finish-pref-badge {
   position: absolute;
   top: 8px;
@@ -881,14 +862,10 @@ footer {
   gap: 5px;
 }
 .offer-list .not-selected > b,
-.offer-list .not-selected > span,
-.offer-list .not-selected > em {
-  opacity: 0.55;
-}
 .offer-list .action {
   margin-top: 5px;
 }
-.accepted-summary {
+.pending-exchange-summary {
   border-left: 3px solid var(--acid);
   padding: 12px;
   background: #20291b;

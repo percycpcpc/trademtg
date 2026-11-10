@@ -9,7 +9,6 @@ datasource db {
 
 enum OfferStatus {
   open
-  accepted
   withdrawn
   done
 }

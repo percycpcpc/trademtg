@@ -592,7 +592,7 @@ export function GalleryApp({ initial }: { initial: List }) {
         )}
       </main>
       <footer>
-        <b>Total if all accepted: HK${list.total.amountHkd}</b>
+        <b>Total for priced wants: HK${list.total.amountHkd}</b>
         <span>
           Based on offered quantities · {list.total.unpricedCards} cards without
           offers · {list.total.remainingCopies} copies still needed
@@ -827,7 +827,7 @@ function TradesTab({ member, actor, cacheVersion, refreshList, invalidateBorrowe
   return <main className="list-main"><section className="list-hero"><p>FINISHED TRADES</p><h1>{member.name}’s trades</h1></section>
     {loading && <p role="status">Loading trades…</p>}
     {error && <p role="alert" className="error">{error} <button onClick={() => void load(true)}>Try again</button></p>}
-    {!loading && !data?.rows.length && <div className="empty"><p>No finished trades yet — mark an accepted offer done from a wantlist.</p></div>}
+    {!loading && !data?.rows.length && <div className="empty"><p>No finished trades yet — mark an open offer done from a wantlist.</p></div>}
     <div className="history-list">{data?.rows.map((trade) => <TradeRow key={trade.id} trade={trade} member={member} actor={actor} onPaid={paid} />)}</div>
     {data?.nextCursor && <button disabled={more} onClick={() => void loadMore()}>{more ? "Loading…" : "Load more"}</button>}
   </main>;
@@ -1004,21 +1004,18 @@ function BorrowedTab({ member, actor, members, cacheVersion, refreshList, invali
 
 function Tile({ want, onClick }: { want: Want; onClick: () => void }) {
   const active = want.offers
-      .filter((o) => o.status === "open" || o.status === "accepted")
+      .filter((o) => o.status === "open")
       .sort(
         (a, b) =>
           a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id),
-      ),
-    accepted = active.find((o) => o.id === want.acceptedOfferId);
-  const shown = accepted
-    ? [accepted, ...active.filter((o) => o !== accepted).slice(0, 2)]
-    : active.slice(0, 2);
+      );
+  const shown = active.slice(0, 2);
   const [bad, setBad] = useState(false),
     [loaded, setLoaded] = useState(false),
     status = tileStatus(want);
   return (
     <button
-      className={`tile ${accepted ? "accepted" : ""}`}
+      className="tile"
       onClick={onClick}
       aria-label={`${want.cardName}, ${want.rarity}, ${status}${active.length ? `, offers from ${active.map((o) => o.offerer.name).join(", ")}` : ""}`}
     >
@@ -1048,13 +1045,9 @@ function Tile({ want, onClick }: { want: Want; onClick: () => void }) {
           {shown.map((o) => (
             <span
               key={o.id}
-              className={accepted && o !== accepted ? "dim" : ""}
               style={{
                 color: o.offerer.color,
-                fontSize:
-                  accepted && o !== accepted
-                    ? "20px"
-                    : `clamp(20px, ${Math.min(16.67, 240 / Math.max(14.4, o.offerer.name.length))}cqw, 44px)`,
+                fontSize: `clamp(20px, ${Math.min(16.67, 240 / Math.max(14.4, o.offerer.name.length))}cqw, 44px)`,
               }}
             >
               {o.offerer.name}
@@ -1065,7 +1058,6 @@ function Tile({ want, onClick }: { want: Want; onClick: () => void }) {
           )}
         </div>
       )}
-      {accepted && <small className="accepted-label">✓ Accepted</small>}
       <div className="need">{status}</div>
     </button>
   );
@@ -1180,7 +1172,6 @@ function DraftStatus({
   );
   const invalidTarget =
     draft.kind === "quantity" && !validTargetPrice(draft.targetPrice);
-  const paused = draft.kind === "offer" && !!want.acceptedOfferId;
   return (
     <div className="draft-status">
       {blocked ? (
@@ -1197,9 +1188,7 @@ function DraftStatus({
         <p role="alert">Enter a target from HK$0 to HK$99999999.99, or leave it blank.</p>
       ) : (
         <span role={draft.status.startsWith("Couldn") ? "alert" : "status"}>
-          {paused
-            ? "Offers are paused while this offer is accepted."
-            : draft.status ||
+          {draft.status ||
               (draft.kind === "offer" && !validPrice(draft.price)
                 ? "Not saved — enter a price"
                 : "Saving…")}
@@ -1217,7 +1206,7 @@ function DraftStatus({
             . Your draft: {draft.qty} copies
             {draft.kind === "offer" && ` · HK$${draft.price} each`}.
           </p>
-          <button disabled={paused} onClick={() => store.resolve(draft, true)}>
+          <button onClick={() => store.resolve(draft, true)}>
             Apply my changes
           </button>
           <button onClick={() => store.resolve(draft, false)}>
@@ -1225,7 +1214,7 @@ function DraftStatus({
           </button>
         </div>
       )}
-      {!draft.conflict && draft.status.startsWith("Couldn") && !paused && (
+      {!draft.conflict && draft.status.startsWith("Couldn") && (
         <button onClick={() => store.save(draftKey(draft.actor, want.id))}>
           Retry
         </button>
@@ -1396,7 +1385,7 @@ function MarkDoneDialog({ want, offer, store, actor, close, complete }: { want: 
     } finally { setPending(false); }
   }
   return <Dialog title="Mark trade done" subtitle={`${want.cardName} · ${offer.qty} ${offer.qty === 1 ? "copy" : "copies"}`} close={close} status={status}>
-    <div className="trade-summary"><p><b>Counterparty</b> {offer.offerer.name}</p><p><b>Unit price</b> HK${amount(offer.unitPriceHkd)}</p><p><b>Total</b> HK${amount(offer.unitPriceHkd, offer.qty)}</p></div>
+    <div className="trade-summary"><p><b>Counterparty</b> {actor === offer.offerer.id ? store.list.member.name : offer.offerer.name}</p><p><b>Unit price</b> HK${amount(offer.unitPriceHkd)}</p><p><b>Total</b> HK${amount(offer.unitPriceHkd, offer.qty)}</p></div>
     <fieldset className="payment-choice"><legend>Payment</legend>
       <label><input type="radio" name="paid" checked={paid === true} onChange={() => setPaid(true)} /> Paid now</label>
       <label><input type="radio" name="paid" checked={paid === false} onChange={() => setPaid(false)} /> Pay later</label>
@@ -1470,10 +1459,10 @@ function Sheet({
   onTradeDone: (wantId: string) => void;
 }) {
   const owner = actor === store.list.member.id,
-    active = want.offers.filter((o) => o.status === "open" || o.status === "accepted"),
-    accepted = active.find((o) => o.id === want.acceptedOfferId);
+    active = want.offers.filter((o) => o.status === "open"),
+    pendingExchange = active.find((o) => owner || o.offerer.id === actor);
   const draft = actor ? store.getDraft(want, actor) : null;
-  const [notice, setNotice] = useState(""), [finishing, setFinishing] = useState(false), [changingPrinting, setChangingPrinting] = useState(false);
+  const [notice, setNotice] = useState(""), [finishing, setFinishing] = useState<Offer | null>(null), [changingPrinting, setChangingPrinting] = useState(false);
   return (
     <Dialog
       title={want.cardName}
@@ -1486,55 +1475,14 @@ function Sheet({
           : `Need ${want.qty} copies`)
       }
     >
-      {accepted && (
-        <section className="accepted-summary">
+      {pendingExchange && (
+        <section className="pending-exchange-summary">
           <b>
-            Accepted from {accepted.offerer.name} · {accepted.qty} of {want.qty}{" "}
-            copies · HK${amount(accepted.unitPriceHkd, accepted.qty)} total
+            Pending exchange · <span style={{ color: `color-mix(in srgb, ${pendingExchange.offerer.color} 55%, white)` }}>
+              {owner ? pendingExchange.offerer.name : store.list.member.name}
+            </span> · {pendingExchange.qty} × HK${amount(pendingExchange.unitPriceHkd)} · {pendingExchange.finish}
           </b>
-          {accepted.qty < want.qty && (
-            <p>
-              {want.qty - accepted.qty} copies still needed. Only one offer can
-              be accepted at a time.
-            </p>
-          )}
-          <p>
-            {owner
-              ? "Replace this offer or clear acceptance to reopen offers."
-              : "Offers are paused while this offer is accepted."}
-          </p>
-          {actor === store.list.member.id || actor === accepted.offerer.id ? (
-            <button className="primary" onClick={() => setFinishing(true)}>Mark trade done</button>
-          ) : actor ? (
-            <p className="muted">Only the buyer or seller can mark this trade done.</p>
-          ) : (
-            <p className="muted">Choose the buyer or seller above to mark this trade done.</p>
-          )}
-          {owner && (
-            <ConfirmAction
-              label="Clear acceptance"
-              question="Reopen offers for this card?"
-              keep="Keep accepted"
-            >
-              {(done) => (
-                <Action
-                  onStatus={setNotice}
-                  store={store}
-                  actor={actor!}
-                  label="Clear acceptance"
-                  operation={() => ({
-                    url: `/api/wants/${want.id}/clear-acceptance`,
-                    method: "POST",
-                    data: { expectedAcceptedOfferId: accepted.id },
-                  })}
-                  onSuccess={() => {
-                    done();
-                    setNotice("Offers reopened.");
-                  }}
-                />
-              )}
-            </ConfirmAction>
-          )}
+          <button className="primary" onClick={() => setFinishing(pendingExchange)}>Mark done</button>
         </section>
       )}
       {!actor && (
@@ -1590,15 +1538,11 @@ function Sheet({
           <DraftStatus draft={draft} store={store} want={want} />
         </section>
       )}
-      {actor && !owner && !accepted && (
+      {actor && !owner && (
         <OfferEditor want={want} store={store} actor={actor} />
-      )}
-      {accepted && draft?.dirty && !owner && (
-        <DraftStatus draft={draft} store={store} want={want} />
       )}
       {actor &&
         !owner &&
-        !accepted &&
         active
           .filter((o) => o.offerer.id === actor)
           .map((o) => (
@@ -1621,17 +1565,13 @@ function Sheet({
       </h3>
       <div className="offer-list">
         {[...active]
-          .filter((o) => owner || !actor || accepted || o.offerer.id !== actor)
+          .filter((o) => owner || !actor || o.offerer.id !== actor)
           .sort(
             (a, b) =>
-              Number(b.id === accepted?.id) - Number(a.id === accepted?.id) ||
               Number(b.offerer.id === actor) - Number(a.offerer.id === actor),
           )
           .map((o) => (
-            <article
-              key={o.id}
-              className={accepted && o !== accepted ? "not-selected" : ""}
-            >
+            <article key={o.id}>
               <b
                 style={{
                   color: `color-mix(in srgb, ${o.offerer.color} 55%, white)`,
@@ -1645,61 +1585,15 @@ function Sheet({
                 {amount(o.unitPriceHkd, o.qty)} total
               </span>
               <OfferFlags want={want} offer={o} />
-              <em>
-                {o === accepted
-                  ? "Accepted"
-                  : accepted
-                    ? "Not selected · offers paused"
-                    : "Open"}
-              </em>
-              {owner &&
-                o !== accepted &&
-                (accepted ? (
-                  <ConfirmAction
-                    label={`Replace with ${o.offerer.name}`}
-                    question={`Replace ${accepted.offerer.name}: ${accepted.qty} copies · HK$${amount(accepted.unitPriceHkd, accepted.qty)} total with ${o.offerer.name}: ${o.qty} copies · HK$${amount(o.unitPriceHkd, o.qty)} total?`}
-                    keep="Cancel"
-                  >
-                    {(done) => (
-                      <Action
-                        onStatus={setNotice}
-                        store={store}
-                        actor={actor!}
-                        label="Replace accepted offer"
-                        primary
-                        operation={() => ({
-                          url: `/api/offers/${o.id}/accept`,
-                          method: "POST",
-                          data: { expectedAcceptedOfferId: accepted.id },
-                        })}
-                        onSuccess={() => {
-                          done();
-                          setNotice(
-                            `Accepted ${o.qty} copies from ${o.offerer.name}.`,
-                          );
-                        }}
-                      />
-                    )}
-                  </ConfirmAction>
-                ) : (
-                  <Action
-                    onStatus={setNotice}
-                    store={store}
-                    actor={actor!}
-                    label="Accept"
-                    primary
-                    operation={() => ({
-                      url: `/api/offers/${o.id}/accept`,
-                      method: "POST",
-                      data: { expectedAcceptedOfferId: null },
-                    })}
-                    onSuccess={() =>
-                      setNotice(
-                        `Accepted ${o.qty} copies from ${o.offerer.name}.`,
-                      )
-                    }
-                  />
-                ))}
+              <em>Open</em>
+              {actor && (owner || actor === o.offerer.id) && (
+                <button className="primary" onClick={() => setFinishing(o)}>Mark done</button>
+              )}
+              {actor === o.offerer.id && (
+                <ConfirmAction label="Withdraw" question={`Withdraw your offer for ${want.cardName}?`} keep="Keep offer">
+                  {(done) => <Action store={store} actor={actor} label="Withdraw" operation={() => ({ url: `/api/offers/${o.id}`, method: "PATCH", data: { status: "withdrawn" } })} onSuccess={done} />}
+                </ConfirmAction>
+              )}
             </article>
           ))}
       </div>
@@ -1730,7 +1624,7 @@ function Sheet({
             <ConfirmAction
               key={o.id}
               label={`Remove ${o.offerer.name}'s offer`}
-              question={`Remove ${o.offerer.name}'s offer?${o === accepted ? " Removing this accepted offer will reopen offers for this card." : ""}`}
+              question={`Remove ${o.offerer.name}'s offer?`}
               keep="Keep offer"
             >
               {(done) => (
@@ -1751,13 +1645,13 @@ function Sheet({
           ))}
         </details>
       )}
-      {finishing && actor && accepted && (
+      {finishing && actor && (
         <MarkDoneDialog
           want={want}
-          offer={accepted}
+          offer={finishing}
           store={store}
           actor={actor}
-          close={() => setFinishing(false)}
+          close={() => setFinishing(null)}
           complete={(wantId) => { onTradeDone(wantId); close(); }}
         />
       )}

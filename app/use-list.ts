@@ -148,7 +148,7 @@ export function useList(initial: List) {
     let draft = draftRef.current[key];
     if (!draft || draft.conflict || saving.current.has(key)) return;
     const want = latest.current.wants.find((w) => w.id === draft.wantId);
-    if (!want || (draft.kind === "offer" && want.acceptedOfferId)) return;
+    if (!want) return;
     if (
       !validQuantity(draft.qty, draft.kind === "offer" ? want.qty : 9999) ||
       (draft.kind === "offer" && !validPrice(draft.price))

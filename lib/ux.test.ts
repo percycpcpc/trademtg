@@ -34,7 +34,6 @@ const groupedWant = (
     foilPref: "either",
     targetPriceHkd: null,
     offers: [],
-    acceptedOfferId: null,
     coveredQty: 0,
     remainingQty: 1,
     ...overrides,
@@ -162,7 +161,6 @@ describe("import review presentation", () => {
 describe("gallery coverage", () => {
   const want = {
     qty: 4,
-    acceptedOfferId: null,
     offers: [
       { id: "a", qty: 2, status: "open" },
       { id: "b", qty: 4, status: "withdrawn" },
@@ -170,13 +168,9 @@ describe("gallery coverage", () => {
   } as Want;
   it("does not sum competing open offers as coverage and uses singular copy", () =>
     expect(tileStatus(want)).toBe("Need 4 · 1 offer"));
-  it("explains partial acceptance", () =>
-    expect(tileStatus({ ...want, acceptedOfferId: "a" })).toBe(
-      "2/4 accepted · 2 still needed",
-    ));
-  it("omits remaining copy text at full coverage", () =>
-    expect(tileStatus({ ...want, qty: 2, acceptedOfferId: "a" })).toBe(
-      "2/2 accepted",
+  it("keeps the need count when multiple offers are open", () =>
+    expect(tileStatus({ ...want, offers: [...want.offers, { id: "c", qty: 1, status: "open" } as any] })).toBe(
+      "Need 4 · 2 offers",
     ));
 });
 describe("per-list operation queue", () => {

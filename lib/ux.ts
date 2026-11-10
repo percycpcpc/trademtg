@@ -133,11 +133,8 @@ function addMoney(left: string, right: string) {
   return `${cents / 100n}.${String(cents % 100n).padStart(2, "0")}`;
 }
 export function tileStatus(want: Want) {
-  const active = want.offers.filter((o) => o.status !== "withdrawn");
-  const accepted = active.find((o) => o.id === want.acceptedOfferId);
-  return accepted
-    ? `${accepted.qty}/${want.qty} accepted${accepted.qty < want.qty ? ` · ${want.qty - accepted.qty} still needed` : ""}`
-    : `Need ${want.qty}${active.length ? ` · ${active.length} ${active.length === 1 ? "offer" : "offers"}` : ""}`;
+  const active = want.offers.filter((o) => o.status === "open");
+  return `Need ${want.qty}${active.length ? ` · ${active.length} ${active.length === 1 ? "offer" : "offers"}` : ""}`;
 }
 export type ImportReport = {
   batchId: string;
