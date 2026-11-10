@@ -52,6 +52,7 @@ model Want {
   collectorNo    String
   rarity         String
   colors         String[] @default([])
+  typeLine       String?
   qty            Int
   foilPref       String   @default("either")
   targetPriceHkd Decimal? @db.Decimal(12, 2)

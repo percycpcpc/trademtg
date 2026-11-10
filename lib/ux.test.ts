@@ -3,14 +3,40 @@ import {
   amount,
   aboveTarget,
   finishMismatch,
+  groupWants,
   reviewCounts,
   serialQueue,
   tileStatus,
+  typeGroup,
   validPrice,
   validQuantity,
   type ImportReport,
 } from "./ux";
 import type { Want } from "./client-types";
+
+const groupedWant = (
+  cardName: string,
+  overrides: Partial<Want> = {},
+): Want =>
+  ({
+    id: cardName,
+    scryfallId: cardName,
+    cardName,
+    imageUrl: null,
+    setCode: "lea",
+    collectorNo: "1",
+    rarity: "common",
+    colors: [],
+    typeLine: null,
+    qty: 1,
+    foilPref: "either",
+    targetPriceHkd: null,
+    offers: [],
+    acceptedOfferId: null,
+    coveredQty: 0,
+    remainingQty: 1,
+    ...overrides,
+  }) as Want;
 
 describe("offer entry", () => {
   it.each(["", " ", ".", "1.", "-1", "1e2", "0.001"])(
@@ -150,5 +176,73 @@ describe("per-list operation queue", () => {
     await third;
     expect(seen).toEqual([1, 2, 2]);
     expect(revision).toBe(3);
+  });
+});
+
+describe("wantlist grouping", () => {
+  it("keeps the existing color sections and order", () => {
+    const wants = [
+      groupedWant("Colorless"),
+      groupedWant("Gold", { colors: ["W", "U"] }),
+      groupedWant("Green", { colors: ["G"] }),
+      groupedWant("Red", { colors: ["R"] }),
+      groupedWant("Black", { colors: ["B"] }),
+      groupedWant("Blue", { colors: ["U"] }),
+      groupedWant("White", { colors: ["W"] }),
+    ];
+    expect(groupWants(wants, "color").map(({ section }) => section)).toEqual([
+      "White",
+      "Blue",
+      "Black",
+      "Red",
+      "Green",
+      "Multi",
+      "Colorless",
+    ]);
+  });
+
+  it("orders set sections alphabetically and displays uppercase codes", () => {
+    const wants = [
+      groupedWant("Third", { setCode: "znr" }),
+      groupedWant("First", { setCode: "2xm" }),
+      groupedWant("Second", { setCode: "m11" }),
+    ];
+    expect(groupWants(wants, "set").map(({ section }) => section)).toEqual([
+      "2XM",
+      "M11",
+      "ZNR",
+    ]);
+  });
+
+  it.each([
+    ["Artifact Land", "Land"],
+    ["Battle — Siege", "Battle"],
+    ["Legendary Planeswalker — Jace", "Planeswalker"],
+    ["Legendary Artifact Creature — Golem", "Creature"],
+    ["Instant // Sorcery", "Instant"],
+    ["Kindred Sorcery — Elf", "Sorcery"],
+    ["Enchantment Artifact", "Enchantment"],
+    ["Artifact", "Artifact"],
+    [null, "Other"],
+    ["Kindred — Elf", "Other"],
+  ])("classifies %j as %s", (typeLine, expected) => {
+    expect(typeGroup(typeLine)).toBe(expected);
+  });
+
+  it("sorts cards within a section by rarity and then name", () => {
+    const wants = [
+      groupedWant("Zulu", { rarity: "common", colors: ["W"] }),
+      groupedWant("Beta", { rarity: "rare", colors: ["W"] }),
+      groupedWant("Alpha", { rarity: "rare", colors: ["W"] }),
+      groupedWant("Myth", { rarity: "mythic", colors: ["W"] }),
+      groupedWant("Middle", { rarity: "uncommon", colors: ["W"] }),
+    ];
+    expect(groupWants(wants, "color")[0].cards.map((want) => want.cardName)).toEqual([
+      "Myth",
+      "Alpha",
+      "Beta",
+      "Middle",
+      "Zulu",
+    ]);
   });
 });

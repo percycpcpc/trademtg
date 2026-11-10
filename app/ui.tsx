@@ -17,6 +17,7 @@ import {
   amount,
   aboveTarget,
   finishMismatch,
+  groupWants,
   ImportReport,
   reviewCounts,
   tileStatus,
@@ -284,23 +285,6 @@ function ActorSelect({
     </label>
   );
 }
-const groups = ["White", "Blue", "Black", "Red", "Green", "Multi", "Colorless"];
-const rarity: Record<string, number> = {
-  mythic: 0,
-  rare: 1,
-  uncommon: 2,
-  common: 3,
-};
-function group(want: Want) {
-  return want.colors.length > 1
-    ? "Multi"
-    : ((
-        { W: "White", U: "Blue", B: "Black", R: "Red", G: "Green" } as Record<
-          string,
-          string
-        >
-      )[want.colors[0]] ?? "Colorless");
-}
 export function GalleryApp({ initial }: { initial: List }) {
   const searchParams = useSearchParams();
   const store = useList(initial),
@@ -312,6 +296,7 @@ export function GalleryApp({ initial }: { initial: List }) {
     [panel, setPanel] = useState<"import" | "add" | "repair" | null>(null),
     [exporting, setExporting] = useState(false),
     [notice, setNotice] = useState(""),
+    [groupMode, setGroupMode] = useState<"color" | "set" | "type">("color"),
     [tab, setTabState] = useState<Tab>(() => activeTab(searchParams.get("tab"))),
     [cacheVersion, setCacheVersion] = useState(0);
   const owner = actor === list.member.id,
@@ -335,6 +320,11 @@ export function GalleryApp({ initial }: { initial: List }) {
   }
   useEffect(() => {
     void loadMembers();
+  }, []);
+  useEffect(() => {
+    const stored = localStorage.getItem("wantlist-group-by");
+    if (stored === "color" || stored === "set" || stored === "type")
+      setGroupMode(stored);
   }, []);
   useEffect(() => {
     const refresh = () => {
@@ -507,6 +497,25 @@ export function GalleryApp({ initial }: { initial: List }) {
                 ? `Have one of these? Tap a card to offer it to ${list.member.name}.`
                 : "Choose your name to make offers or manage your own list."}
           </p>
+          <fieldset className="segmented-field">
+            <legend>Group by</legend>
+            <div className="segmented three">
+              {(["color", "set", "type"] as const).map((mode) => (
+                <button
+                  key={mode}
+                  type="button"
+                  aria-pressed={groupMode === mode}
+                  className={groupMode === mode ? "selected" : ""}
+                  onClick={() => {
+                    setGroupMode(mode);
+                    localStorage.setItem("wantlist-group-by", mode);
+                  }}
+                >
+                  {mode[0].toUpperCase() + mode.slice(1)}
+                </button>
+              ))}
+            </div>
+          </fieldset>
         </section>
         <p role="status">{notice}</p>
         {issues > 0 && (
@@ -530,18 +539,10 @@ export function GalleryApp({ initial }: { initial: List }) {
             )}
           </aside>
         )}
-        {groups.map((g) => {
-          const cards = list.wants
-            .filter((w) => group(w) === g)
-            .sort(
-              (a, b) =>
-                (rarity[a.rarity] ?? 9) - (rarity[b.rarity] ?? 9) ||
-                a.cardName.localeCompare(b.cardName),
-            );
-          return cards.length ? (
-            <section className="color-section" key={g}>
+        {groupWants(list.wants, groupMode).map(({ section, cards }) => (
+            <section className="color-section" key={section}>
               <h2>
-                {g}
+                {section}
                 <small>{cards.length}</small>
               </h2>
               <div className="grid">
@@ -554,8 +555,7 @@ export function GalleryApp({ initial }: { initial: List }) {
                 ))}
               </div>
             </section>
-          ) : null;
-        })}
+        ))}
         {!list.wants.length && (
           <div className="empty">
             {owner ? (

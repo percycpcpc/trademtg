@@ -1,5 +1,81 @@
 import type { Finish, FoilPref, Want } from "./client-types";
 
+const colorSections = [
+  "White",
+  "Blue",
+  "Black",
+  "Red",
+  "Green",
+  "Multi",
+  "Colorless",
+];
+const typeSections = [
+  "Land",
+  "Battle",
+  "Planeswalker",
+  "Creature",
+  "Instant",
+  "Sorcery",
+  "Enchantment",
+  "Artifact",
+  "Other",
+];
+const rarityOrder: Record<string, number> = {
+  mythic: 0,
+  rare: 1,
+  uncommon: 2,
+  common: 3,
+};
+
+function colorGroup(want: Want) {
+  return want.colors.length > 1
+    ? "Multi"
+    : ((
+        { W: "White", U: "Blue", B: "Black", R: "Red", G: "Green" } as Record<
+          string,
+          string
+        >
+      )[want.colors[0]] ?? "Colorless");
+}
+
+export function typeGroup(typeLine: string | null): string {
+  if (typeLine)
+    for (const section of typeSections.slice(0, -1))
+      if (new RegExp(`\\b${section}\\b`, "i").test(typeLine)) return section;
+  return "Other";
+}
+
+const compareWants = (a: Want, b: Want) =>
+  (rarityOrder[a.rarity] ?? 9) - (rarityOrder[b.rarity] ?? 9) ||
+  a.cardName.localeCompare(b.cardName);
+
+export function groupWants(
+  wants: Want[],
+  mode: "color" | "set" | "type",
+): { section: string; cards: Want[] }[] {
+  const sectionFor =
+    mode === "color"
+      ? colorGroup
+      : mode === "set"
+        ? (want: Want) => want.setCode.toUpperCase()
+        : (want: Want) => typeGroup(want.typeLine);
+  const bySection = new Map<string, Want[]>();
+  for (const want of wants) {
+    const section = sectionFor(want);
+    bySection.set(section, [...(bySection.get(section) ?? []), want]);
+  }
+  const sections =
+    mode === "color"
+      ? colorSections
+      : mode === "type"
+        ? typeSections
+        : [...bySection.keys()].sort((a, b) => a.localeCompare(b));
+  return sections.flatMap((section) => {
+    const cards = bySection.get(section);
+    return cards?.length ? [{ section, cards: [...cards].sort(compareWants) }] : [];
+  });
+}
+
 export function validQuantity(value: string, max = 9999) {
   return /^\d+$/.test(value) && Number(value) >= 1 && Number(value) <= max;
 }

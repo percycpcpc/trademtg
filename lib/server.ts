@@ -216,6 +216,7 @@ export async function snapshot(memberId: string, actor?: string, tx: any = db) {
       collectorNo: w.collectorNo,
       rarity: w.rarity,
       colors: w.colors,
+      typeLine: w.typeLine,
       qty: w.qty,
       foilPref: w.foilPref,
       targetPriceHkd: w.targetPriceHkd === null ? null : money(w.targetPriceHkd),
@@ -274,6 +275,7 @@ export function cardDto(c: any) {
     setCode: c.set,
     collectorNo: c.collector_number,
     rarity: c.rarity,
+    typeLine: c.type_line ?? null,
     colors: c.colors?.length
       ? c.colors
       : [...new Set((c.card_faces ?? []).flatMap((f: any) => f.colors ?? []))],

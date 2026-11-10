@@ -1,0 +1,1 @@
+ALTER TABLE "Want" ADD COLUMN "typeLine" TEXT;
