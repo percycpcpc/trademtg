@@ -1,6 +1,7 @@
 ﻿import { describe, expect, it } from "vitest";
 import {
   amount,
+  composeDeliveries,
   aboveTarget,
   finishMismatch,
   groupWants,
@@ -13,6 +14,7 @@ import {
   type ImportReport,
 } from "./ux";
 import type { Want } from "./client-types";
+import type { DebtItem, DeliveryItem, Party } from "./client-types";
 
 const groupedWant = (
   cardName: string,
@@ -53,6 +55,38 @@ describe("offer entry", () => {
     for (const value of ["", "0", "1.5", "5"])
       expect(validQuantity(value, 4)).toBe(false);
     expect(validQuantity("4", 4)).toBe(true);
+  });
+});
+describe("deliveries composition", () => {
+  const alice: Party = { id: "a", name: "Alice", color: "red" };
+  const bob: Party = { id: "b", name: "Bob", color: "blue" };
+  const delivery = (buyer: Party, price: string, qty: number, offerId: string): DeliveryItem => ({
+    offerId, wantId: `w-${offerId}`, buyer, cardName: "Lightning Bolt", imageUrl: null,
+    setCode: "lea", collectorNo: "161", qty, unitPriceHkd: price, finish: "non-foil",
+    updatedAt: "2026-11-10T00:00:00.000Z",
+  });
+  const debt = (buyer: Party, amountHkd: string, tradeId: string): DebtItem => ({
+    tradeId, buyer, cardName: "Island", qty: 1, amountHkd,
+    finishedAt: "2026-11-09T00:00:00.000Z",
+  });
+  it("groups multiple buyers, preserves item order, and sorts by buyer name", () => {
+    const result = composeDeliveries([
+      delivery(bob, "2.50", 2, "new"), delivery(bob, "1.00", 1, "old"), delivery(alice, "3", 1, "alice"),
+    ], []);
+    expect(result.map((group) => group.buyer.name)).toEqual(["Alice", "Bob"]);
+    expect(result[1].items.map((item) => item.offerId)).toEqual(["new", "old"]);
+  });
+  it("includes a buyer present only in debts", () => {
+    const result = composeDeliveries([], [debt(bob, "4.25", "t1")]);
+    expect(result[0]).toMatchObject({ buyer: bob, items: [], debtTotalHkd: "4.25" });
+  });
+  it("uses exact decimal-string math for delivery subtotals and debts", () => {
+    const [group] = composeDeliveries(
+      [delivery(alice, "0.29", 3, "a"), delivery(alice, "10.01", 2, "b")],
+      [debt(alice, "0.10", "t1"), debt(alice, "12.34", "t2")],
+    );
+    expect(group.subtotalHkd).toBe("20.89");
+    expect(group.debtTotalHkd).toBe("12.44");
   });
 });
 describe("finish and target guidance", () => {

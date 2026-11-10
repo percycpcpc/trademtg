@@ -128,6 +128,11 @@ nav {
   padding: 10px;
 }
 .history-row.returned { opacity: .52; }
+.delivery-row { grid-template-columns: 52px minmax(0, 1fr); }
+.debt-row { grid-template-columns: minmax(0, 1fr); padding-left: 64px; }
+.print-list { display: grid; gap: 6px; margin: 14px 0; max-height: 42vh; overflow: auto; }
+.print-list button { text-align: left; }
+.print-list button.selected { border-color: var(--acid); color: var(--acid); }
 .row-thumb { width: 48px; height: 67px; object-fit: cover; border-radius: 4px; padding: 0; }
 .row-thumb.placeholder { font-size: 8px; text-align: center; background: #20262a; }
 .row-card, .row-actions { display: flex; flex-direction: column; gap: 3px; }

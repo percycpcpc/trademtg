@@ -10,12 +10,13 @@ import {
   useState,
 } from "react";
 import { createPortal } from "react-dom";
-import type { Borrow, List, Member, Offer, Trade, Want } from "../lib/client-types";
+import type { Borrow, DeliveriesResponse, List, Member, Offer, Trade, Want } from "../lib/client-types";
 import { composeBorrowedSections } from "../lib/trades-borrowed";
 import { getReferencePrice } from "../lib/reference-price";
 import {
   amount,
   aboveTarget,
+  composeDeliveries,
   finishMismatch,
   groupWants,
   ImportReport,
@@ -35,12 +36,12 @@ import {
   useList,
 } from "./use-list";
 
-type Tab = "wantlist" | "trades" | "borrowed";
+type Tab = "wantlist" | "trades" | "borrowed" | "deliveries";
 type TradeCache = { rows: Trade[]; nextCursor: string | null; complete: boolean };
-type MemberTabCache = { trades?: TradeCache; borrows?: Borrow[] };
+type MemberTabCache = { trades?: TradeCache; borrows?: Borrow[]; deliveries?: DeliveriesResponse };
 const tabCache = new Map<string, MemberTabCache>();
 const activeTab = (value: string | null): Tab =>
-  value === "trades" || value === "borrowed" ? value : "wantlist";
+  value === "trades" || value === "borrowed" || value === "deliveries" ? value : "wantlist";
 
 export function Picker() {
   const [members, setMembers] = useState<Member[]>([]),
@@ -351,7 +352,7 @@ export function GalleryApp({ initial }: { initial: List }) {
     else url.searchParams.set("tab", next);
     window.history.replaceState(window.history.state, "", url);
   }
-  function invalidate(...names: ("trades" | "borrows")[]) {
+  function invalidate(...names: ("trades" | "borrows" | "deliveries")[]) {
     const cached = tabCache.get(list.member.id);
     if (cached) names.forEach((name) => delete cached[name]);
     setCacheVersion((value) => value + 1);
@@ -432,7 +433,7 @@ export function GalleryApp({ initial }: { initial: List }) {
         )}
       </header>
       <div className="tabs" role="tablist" aria-label="Member page">
-        {(["wantlist", "trades", "borrowed"] as const).map((value) => (
+        {(["wantlist", "trades", "borrowed", "deliveries"] as const).map((value) => (
           <button
             key={value}
             role="tab"
@@ -607,7 +608,7 @@ export function GalleryApp({ initial }: { initial: List }) {
           refreshList={() => store.refresh(actor)}
           invalidateBorrowed={() => invalidate("borrows")}
         />
-      ) : (
+      ) : tab === "borrowed" ? (
         <BorrowedTab
           member={list.member}
           actor={actor}
@@ -616,6 +617,8 @@ export function GalleryApp({ initial }: { initial: List }) {
           refreshList={() => store.refresh(actor)}
           invalidateTrades={() => invalidate("trades")}
         />
+      ) : (
+        <DeliveriesTab member={list.member} cacheVersion={cacheVersion} />
       )}
       {open && (
         <Sheet
@@ -628,7 +631,7 @@ export function GalleryApp({ initial }: { initial: List }) {
           close={() => setOpenWantId(null)}
           onTradeDone={(wantId) => {
             store.resetWantDrafts(wantId);
-            invalidate("trades", "borrows");
+            invalidate("trades", "borrows", "deliveries");
             setNotice("Saved");
           }}
         />
@@ -651,6 +654,34 @@ export function GalleryApp({ initial }: { initial: List }) {
           close={() => setPanel(null)}
           status={notice}
         >
+          {owner && issues > 0 && (
+            <div className="section-heading">
+              <b>{issues} unmatched lines</b>
+              <ConfirmAction
+                label={`Skip all (${issues})`}
+                question={`Skip all ${issues} unmatched lines? They won't be added.`}
+                keep="Keep lines"
+              >
+                {(done) => (
+                  <Action
+                    onStatus={setNotice}
+                    store={store}
+                    actor={actor}
+                    label="Skip all"
+                    operation={() => ({
+                      url: `/api/members/${list.member.id}/import-lines`,
+                      method: "DELETE",
+                      data: {},
+                    })}
+                    onSuccess={() => {
+                      done();
+                      setNotice(`Skipped ${issues} lines.`);
+                    }}
+                  />
+                )}
+              </ConfirmAction>
+            </div>
+          )}
           {!issues && <p>All imported lines are matched.</p>}
           {list.unresolvedImports.map((line) => (
             <RepairLine
@@ -823,6 +854,53 @@ function BorrowRow({ row, member, actor, onChange }: { row: Borrow; member: Memb
       {message && !error && <small role="status">{message}</small>}{error && <p role="alert" className="error">{error}</p>}
     </div>
   </article>;
+}
+
+function DeliveriesTab({ member, cacheVersion }: { member: Member; cacheVersion: number }) {
+  const [data, setData] = useState<DeliveriesResponse | undefined>(
+    () => tabCache.get(member.id)?.deliveries,
+  );
+  const [loading, setLoading] = useState(!data), [error, setError] = useState("");
+  async function load(force = false) {
+    const cached = force ? undefined : tabCache.get(member.id)?.deliveries;
+    if (cached) { setData(cached); setLoading(false); return; }
+    setLoading(true); setError("");
+    try {
+      const result = await api(`/api/members/${member.id}/deliveries`) as DeliveriesResponse;
+      tabCache.set(member.id, { ...tabCache.get(member.id), deliveries: result });
+      setData(result);
+    } catch (e) { setError((e as Error).message); }
+    finally { setLoading(false); }
+  }
+  useEffect(() => { void load(); }, [member.id, cacheVersion]);
+  const groups = composeDeliveries(data?.deliveries ?? [], data?.debts ?? []);
+  return <main className="list-main">
+    <section className="list-hero"><p>交收清單</p><h1>Deliveries</h1></section>
+    {loading && <p role="status">Loading deliveries…</p>}
+    {error && <p role="alert" className="error">{error} <button onClick={() => void load(true)}>Try again</button></p>}
+    {!loading && !data?.deliveries.length && <div className="empty"><p>Nothing to deliver.</p></div>}
+    {!loading && groups.map((group) => (
+      <section className="borrow-section" key={group.buyer.id}>
+        <div className="section-heading">
+          <h2 style={{ color: group.buyer.color }}>{group.buyer.name}</h2>
+          <p>{group.items.reduce((sum, item) => sum + item.qty, 0)} cards · HK${group.subtotalHkd}{group.debtTotalHkd !== "0.00" && <> · collect HK${group.debtTotalHkd}</>}</p>
+        </div>
+        <div className="history-list">
+          {group.items.map((item) => (
+            <article className="history-row delivery-row" key={item.offerId}>
+              <CardThumb imageUrl={item.imageUrl} name={item.cardName} />
+              <div className="row-card"><b>{item.cardName}</b><span>{item.setCode.toUpperCase()} · #{item.collectorNo} · {item.qty}× · HK${amount(item.unitPriceHkd)} ({item.finish})</span></div>
+            </article>
+          ))}
+          {group.debts.map((debt) => (
+            <article className="history-row debt-row" key={debt.tradeId}>
+              <div className="row-card"><b>{debt.cardName}</b><span>×{debt.qty} · HK${debt.amountHkd} · finished {new Date(debt.finishedAt).toLocaleDateString()} · unpaid</span></div>
+            </article>
+          ))}
+        </div>
+      </section>
+    ))}
+  </main>;
 }
 
 function ImportBorrowsDialog({ member, members, actor, close, saved }: { member: Member; members: Member[]; actor: string | null; close: () => void; saved: () => Promise<void> }) {
@@ -1328,6 +1406,52 @@ function MarkDoneDialog({ want, offer, store, actor, close, complete }: { want: 
     <button className="primary" disabled={paid === null || pending} onClick={() => void submit()}>{pending ? "Saving…" : "Mark trade done"}</button>
   </Dialog>;
 }
+type CardPrint = Card & { rarity: string; releasedAt: string; finishes: string[] };
+function PrintingDialog({ want, store, actor, close, changed }: {
+  want: Want; store: ListStore; actor: string; close: () => void; changed: (message: string) => void;
+}) {
+  const [query, setQuery] = useState(want.cardName), [prints, setPrints] = useState<CardPrint[]>([]);
+  const [selected, setSelected] = useState<CardPrint>(), [status, setStatus] = useState("Searching…");
+  const [pending, setPending] = useState(false), [retry, setRetry] = useState(0);
+  useEffect(() => {
+    setSelected(undefined); setPrints([]);
+    if (!query.trim()) { setStatus(""); return; }
+    const controller = new AbortController();
+    setStatus("Searching…");
+    const timer = setTimeout(() => {
+      api(`/api/cards/prints?name=${encodeURIComponent(query.trim())}`, { signal: controller.signal })
+        .then((result) => { setPrints(result.prints); setStatus(result.prints.length ? "" : "No printings found."); })
+        .catch((error) => { if (error.name !== "AbortError") setStatus((error as Error).message); });
+    }, 200);
+    return () => { controller.abort(); clearTimeout(timer); };
+  }, [query, retry]);
+  async function save() {
+    if (!selected || pending) return;
+    setPending(true); setStatus("Saving…");
+    try {
+      await store.mutate({
+        url: `/api/wants/${want.id}/printing`, method: "PUT", data: { scryfallId: selected.scryfallId },
+      }, actor);
+      changed(`Printing changed to ${selected.setCode.toUpperCase()} · #${selected.collectorNo}`);
+      close();
+    } catch (error) {
+      setStatus((error as Error).message);
+    } finally { setPending(false); }
+  }
+  const description = (print: CardPrint) => `${print.setCode.toUpperCase()} · #${print.collectorNo} · ${print.rarity} · ${print.finishes.join(", ") || "unknown finish"} · ${print.releasedAt.slice(0, 10)}`;
+  return <Dialog title="Change printing" subtitle={want.cardName} close={close} status={status}>
+    <label>Card name<input value={query} autoComplete="off" onChange={(event) => setQuery(event.target.value)} /></label>
+    {status && status !== "Searching…" && status !== "Saving…" && !prints.length && <button onClick={() => setRetry((value) => value + 1)}>Retry</button>}
+    <div className="print-list">
+      {prints.map((print) => <button key={print.scryfallId} className={selected?.scryfallId === print.scryfallId ? "selected" : ""} onClick={() => setSelected(print)}>{description(print)}</button>)}
+    </div>
+    {selected && <div className="inline-confirm">
+      <p>Change this want to {description(selected)}?</p>
+      <button className="primary" disabled={pending} onClick={() => void save()}>{pending ? "Saving…" : "Confirm printing"}</button>
+      <button disabled={pending} onClick={() => setSelected(undefined)}>Keep current</button>
+    </div>}
+  </Dialog>;
+}
 function Sheet({
   want,
   store,
@@ -1349,7 +1473,7 @@ function Sheet({
     active = want.offers.filter((o) => o.status === "open" || o.status === "accepted"),
     accepted = active.find((o) => o.id === want.acceptedOfferId);
   const draft = actor ? store.getDraft(want, actor) : null;
-  const [notice, setNotice] = useState(""), [finishing, setFinishing] = useState(false);
+  const [notice, setNotice] = useState(""), [finishing, setFinishing] = useState(false), [changingPrinting, setChangingPrinting] = useState(false);
   return (
     <Dialog
       title={want.cardName}
@@ -1423,6 +1547,7 @@ function Sheet({
       )}
       {owner && draft && (
         <section>
+          <button onClick={() => setChangingPrinting(true)}>Change printing</button>
           <div className="editor owner-editor">
             <label>
               Copies wanted
@@ -1635,6 +1760,9 @@ function Sheet({
           close={() => setFinishing(false)}
           complete={(wantId) => { onTradeDone(wantId); close(); }}
         />
+      )}
+      {changingPrinting && owner && actor && (
+        <PrintingDialog want={want} store={store} actor={actor} close={() => setChangingPrinting(false)} changed={setNotice} />
       )}
     </Dialog>
   );

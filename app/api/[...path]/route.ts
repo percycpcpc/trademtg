@@ -201,6 +201,47 @@ export async function GET(
         nextCursor: hasMore ? encodeTradeCursor(page.at(-1)!.id) : null,
       });
     }
+    if (p[0] === "members" && p[2] === "deliveries" && p.length === 3) {
+      if (!validUuid(p[1]))
+        throw new ApiError(400, "INVALID_ID", "Invalid member ID");
+      const member = await db.member.findUnique({ where: { id: p[1] }, select: { id: true } });
+      if (!member) throw new ApiError(404, "MEMBER_NOT_FOUND", "Member not found");
+      const [offers, trades] = await Promise.all([
+        db.offer.findMany({
+          where: { offererId: p[1], status: "accepted" },
+          include: { want: { include: { member: true } } },
+          orderBy: [{ updatedAt: "desc" }],
+        }),
+        db.trade.findMany({
+          where: { sellerId: p[1], paidAt: null },
+          include: { buyer: true },
+          orderBy: [{ finishedAt: "desc" }],
+        }),
+      ]);
+      return Response.json({
+        deliveries: offers.map((offer) => ({
+          offerId: offer.id,
+          wantId: offer.wantId,
+          buyer: party(offer.want.member),
+          cardName: offer.want.cardName,
+          imageUrl: offer.want.imageUrl,
+          setCode: offer.want.setCode,
+          collectorNo: offer.want.collectorNo,
+          qty: offer.qty,
+          unitPriceHkd: money(offer.unitPriceHkd),
+          finish: offer.finish,
+          updatedAt: offer.updatedAt.toISOString(),
+        })),
+        debts: trades.map((trade) => ({
+          tradeId: trade.id,
+          buyer: party(trade.buyer),
+          cardName: trade.cardName,
+          qty: trade.qty,
+          amountHkd: money(trade.unitPriceHkd.mul(trade.qty)),
+          finishedAt: trade.finishedAt.toISOString(),
+        })),
+      });
+    }
     if (p[0] === "members" && p[2] === "borrows" && p.length === 3) {
       if (!validUuid(p[1]))
         throw new ApiError(400, "INVALID_ID", "Invalid member ID");
@@ -267,6 +308,28 @@ export async function GET(
           "Card could not be resolved",
         );
       return Response.json({ card: cardDto(await x.json()) });
+    }
+    if (p.join("/") === "cards/prints") {
+      const name = r.nextUrl.searchParams.get("name")?.trim();
+      if (!name) throw new ApiError(422, "INVALID_NAME", "Card name required");
+      const query = `!"${name}" unique:prints`;
+      const x = await fetch(
+        `https://api.scryfall.com/cards/search?q=${encodeURIComponent(query)}&order=released&dir=desc`,
+        { headers: { "User-Agent": "TradeMTG/1.0" }, cache: "no-store" },
+      );
+      if (!x.ok)
+        throw new ApiError(
+          x.status === 404 ? 422 : 503,
+          x.status === 404 ? "CARD_NOT_FOUND" : "CARD_LOOKUP_UNAVAILABLE",
+          "Card could not be resolved",
+        );
+      return Response.json({
+        prints: ((await x.json()).data ?? []).map((card: any) => ({
+          ...cardDto(card),
+          releasedAt: card.released_at,
+          finishes: card.finishes ?? [],
+        })),
+      });
     }
     throw new ApiError(404, "NOT_FOUND", "Route not found");
   } catch (e) {
@@ -628,6 +691,52 @@ export async function PUT(
   try {
     const p = (await c.params).path,
       b = await json(r);
+    if (p[0] === "wants" && p[2] === "printing" && p.length === 3) {
+      if (!validUuid(p[1]) || !validUuid(b.scryfallId))
+        throw new ApiError(422, "INVALID_PRINTING", "Choose a valid printing");
+      const want = await db.want.findUnique({
+        where: { id: p[1] },
+        include: { offers: true },
+      });
+      if (!want) throw new ApiError(404, "WANT_NOT_FOUND", "Want not found");
+      if (b.actorMemberId !== want.memberId)
+        throw new ApiError(403, "OWNER_REQUIRED", "Only the owner may change the printing");
+      if (want.offers.some((offer) => offer.status === "accepted"))
+        throw new ApiError(409, "PRINTING_LOCKED", "Clear the accepted offer before changing the printing");
+      const lookup = await fetch(`https://api.scryfall.com/cards/${encodeURIComponent(b.scryfallId)}`, {
+        headers: { Accept: "application/json", "User-Agent": "TradeMTG/1.0" },
+        cache: "no-store",
+      });
+      if (!lookup.ok)
+        throw new ApiError(
+          lookup.status === 404 ? 422 : 503,
+          lookup.status === 404 ? "CARD_NOT_FOUND" : "CARD_LOOKUP_UNAVAILABLE",
+          "Card could not be resolved",
+        );
+      const card = cardDto(await lookup.json());
+      return Response.json(
+        await memberTx(want.memberId, b, async (tx) => {
+          const current = await tx.want.findUnique({
+            where: { id: want.id },
+            include: { offers: true },
+          });
+          if (!current) throw new ApiError(404, "WANT_NOT_FOUND", "Want not found");
+          if (current.offers.some((offer: any) => offer.status === "accepted"))
+            throw new ApiError(409, "PRINTING_LOCKED", "Clear the accepted offer before changing the printing");
+          const duplicate = await tx.want.findFirst({
+            where: { memberId: current.memberId, scryfallId: b.scryfallId, id: { not: current.id } },
+            select: { id: true },
+          });
+          if (duplicate)
+            throw new ApiError(409, "DUPLICATE_PRINTING", "That printing is already on your list");
+          await tx.want.update({
+            where: { id: current.id },
+            data: card,
+          });
+          return { wantId: current.id, printing: card };
+        }),
+      );
+    }
     if (p[0] === "members" && p[2] === "wants") {
       if (b.actorMemberId !== p[1] && !b.items?.every((x: any) => x.qty === 0))
         throw new ApiError(403, "OWNER_REQUIRED", "Only owner may add wants");
@@ -915,6 +1024,20 @@ export async function DELETE(
   try {
     const p = (await c.params).path,
       b = await json(r);
+    if (p[0] === "members" && p[2] === "import-lines" && p.length === 3) {
+      if (!validUuid(p[1])) throw new ApiError(400, "INVALID_ID", "Invalid member ID");
+      if (b.actorMemberId !== p[1])
+        throw new ApiError(403, "OWNER_REQUIRED", "Only the owner may skip imported lines");
+      return Response.json(
+        await memberTx(p[1], b, async (tx) => {
+          const result = await tx.importLine.updateMany({
+            where: { batch: { memberId: p[1] }, state: "unresolved" },
+            data: { state: "ignored" },
+          });
+          return { skipped: result.count };
+        }),
+      );
+    }
     if (p[0] === "wants") {
       const w = await db.want.findUnique({ where: { id: p[1] } });
       if (!w) throw new ApiError(404, "WANT_NOT_FOUND", "Want not found");
